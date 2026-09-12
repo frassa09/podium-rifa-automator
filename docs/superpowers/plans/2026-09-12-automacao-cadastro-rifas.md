@@ -2364,7 +2364,7 @@ Decisão: **não implementar** — o caso de uso do usuário é importar uma tab
 - Consumes: tudo acima.
 - Produces: script que faz login real e **somente lê** a página `form_rifa` e o maior Nº (modo "seco" do spec §9) — nunca submete fora de autorização.
 
-- [ ] **Step 1: Criar script E2E seco**
+- [x] **Step 1: Criar script E2E seco**
 
 Create: `server/tests/e2e.seco.ts`
 
@@ -2389,7 +2389,7 @@ async function main() {
 main().catch(e => { console.error(e); process.exit(1) })
 ```
 
-- [ ] **Step 2: Adicionar script `test:e2e` no server/package.json**
+- [x] **Step 2: Adicionar script `test:e2e` no server/package.json**
 
 ```json
 "test:e2e": "tsx tests/e2e.seco.ts"
@@ -2404,7 +2404,7 @@ Expected: login OK, turma impresso, maior Nº real impresso (ex.: `1104`). Se `l
 
 Depois da aprovação explícita do usuário (via chat), usar `/api/jobs` com 1 linha real e `/iniciar`; confirmar incremento do Nº na tabela do site. Registrar o Nº no log.
 
-- [ ] **Step 5: Commit do script e de ajustes de regex (se houver)**
+- [x] **Step 5: Commit do script e de ajustes de regex (se houver)**
 
 ```bash
 git add server/tests/e2e.seco.ts server/package.json
