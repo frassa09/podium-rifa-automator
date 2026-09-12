@@ -1839,7 +1839,7 @@ git commit -m "feat: express api and bootstrap"
 
 Design: usar token CSS (variáveis) conforme `DESIGN.md`: tela escura (preto/branco/accent), fonte system-ui, cards arredondados, botões com ênfase. Sem framework.
 
-- [ ] **Step 1: Criar `web/src/index.html`**
+- [x] **Step 1: Criar `web/src/index.html`**
 
 ```html
 <!DOCTYPE html>
@@ -1916,7 +1916,7 @@ Maria;867.301.690-87;(11) 98765-4321;maria@x.com;1"></textarea>
 </html>
 ```
 
-- [ ] **Step 2: Criar `web/src/manifest.webmanifest`** (instalável como PWA)
+- [x] **Step 2: Criar `web/src/manifest.webmanifest`** (instalável como PWA)
 
 ```json
 {
@@ -1930,7 +1930,7 @@ Maria;867.301.690-87;(11) 98765-4321;maria@x.com;1"></textarea>
 }
 ```
 
-- [ ] **Step 3: Criar `web/src/style.css`** (design tokens do DESIGN.md)
+- [x] **Step 3: Criar `web/src/style.css`** (design tokens do DESIGN.md)
 
 ```css
 :root {
@@ -2065,7 +2065,7 @@ input, textarea {
 }
 ```
 
-- [ ] **Step 4: Criar `web/src/app.js`** (SPA vanilla + polling)
+- [x] **Step 4: Criar `web/src/app.js`** (SPA vanilla + polling)
 
 ```js
 const $ = sel => document.querySelector(sel)
@@ -2221,13 +2221,13 @@ window.addEventListener('hashchange', () => {
 })
 ```
 
-- [ ] **Step 5: Rodar app e verificar navegação estática**
+- [x] **Step 5: Rodar app e verificar navegação estática**
 
 Run: `npm run dev` (raiz) — server sobe em `https://localhost:3000` com o frontend servido. Abra no navegador: navegação entre as 3 telas funciona; API health responde.
 
 Expected: página carrega sem erro de console; troca de abas OK.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add web/src
