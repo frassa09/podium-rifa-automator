@@ -1,6 +1,6 @@
-# Automação de Cadastro de Rifas — Implementation Plan
+﻿# Automação de Cadastro de Rifas — Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Construir um app (motor Node.js + API + frontend mobile) que cadastra rifas automaticamente, uma a uma, no site restrito da Podium (`restrita.podiumeventosformaturas.com.br`), a partir de uma tabela de compradores.
 
@@ -87,7 +87,7 @@ podium-rifa-automator/
 **Interfaces:**
 - Produces: scripts `npm run dev|build|test|lint|typecheck` executáveis na raiz; `server/` com vitest configurado e dependências instaladas.
 
-- [ ] **Step 1: Criar `package.json` da raiz (workspace + scripts)**
+- [x] **Step 1: Criar `package.json` da raiz (workspace + scripts)**
 
 ```json
 {
@@ -108,7 +108,7 @@ podium-rifa-automator/
 }
 ```
 
-- [ ] **Step 2: Criar `tsconfig.base.json`**
+- [x] **Step 2: Criar `tsconfig.base.json`**
 
 ```json
 {
@@ -127,7 +127,7 @@ podium-rifa-automator/
 }
 ```
 
-- [ ] **Step 3: Criar `.gitignore`**
+- [x] **Step 3: Criar `.gitignore`**
 
 ```
 node_modules/
@@ -140,7 +140,7 @@ data/
 .DS_Store
 ```
 
-- [ ] **Step 4: Criar `server/package.json`**
+- [x] **Step 4: Criar `server/package.json`**
 
 ```json
 {
@@ -173,7 +173,7 @@ data/
 }
 ```
 
-- [ ] **Step 5: Criar `server/tsconfig.json`**
+- [x] **Step 5: Criar `server/tsconfig.json`**
 
 ```json
 {
@@ -187,7 +187,7 @@ data/
 }
 ```
 
-- [ ] **Step 6: Criar `server/vitest.config.ts`**
+- [x] **Step 6: Criar `server/vitest.config.ts`**
 
 ```ts
 import { defineConfig } from 'vitest/config'
@@ -200,7 +200,7 @@ export default defineConfig({
 })
 ```
 
-- [ ] **Step 7: Criar `web/package.json`**
+- [x] **Step 7: Criar `web/package.json`**
 
 ```json
 {
@@ -215,7 +215,7 @@ export default defineConfig({
 }
 ```
 
-- [ ] **Step 8: Instalar dependências e verificar**
+- [x] **Step 8: Instalar dependências e verificar**
 
 Run: `npm install`
 Expected: termina sem erros; `node_modules/` criado.
@@ -223,7 +223,7 @@ Expected: termina sem erros; `node_modules/` criado.
 Run: `npm test`
 Expected: `web: no unit tests (vanilla JS)` e vitest roda 0 testes no server (exit 0).
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add package.json tsconfig.base.json .gitignore server web
@@ -246,7 +246,7 @@ git commit -m "chore: scaffold monorepo (server + web workspaces)"
   - `maskCPF(cpf: string): string` — normaliza e retorna `999.999.999-99`; retorna input se inválido/curto demais.
   - `maskPhone(phone: string): string` — normaliza dígitos e retorna `(99) 99999-9999` (11 dígitos) ou `(99) 9999-9999` (10 dígitos); retorna input se < 10 dígitos.
 
-- [ ] **Step 1: Escrever teste que falha**
+- [x] **Step 1: Escrever teste que falha**
 
 Create: `server/tests/cpf.test.ts`
 
@@ -304,12 +304,12 @@ describe('maskPhone', () => {
 })
 ```
 
-- [ ] **Step 2: Rodar teste — esperar falha**
+- [x] **Step 2: Rodar teste — esperar falha**
 
 Run: `npm test --workspace server`
 Expected: FAIL — módulos `../src/utils/cpf.ts` e `masks.ts` não existem.
 
-- [ ] **Step 3: Implementar `server/src/utils/cpf.ts`**
+- [x] **Step 3: Implementar `server/src/utils/cpf.ts`**
 
 ```ts
 export function apenasDigitos(v: string): string {
@@ -339,7 +339,7 @@ export function maskCPF(cpf: string): string {
 }
 ```
 
-- [ ] **Step 4: Implementar `server/src/utils/masks.ts`**
+- [x] **Step 4: Implementar `server/src/utils/masks.ts`**
 
 ```ts
 import { apenasDigitos } from './cpf.ts'
@@ -352,12 +352,12 @@ export function maskPhone(phone: string): string {
 }
 ```
 
-- [ ] **Step 5: Rodar teste — esperar passar**
+- [x] **Step 5: Rodar teste — esperar passar**
 
 Run: `npm test --workspace server`
 Expected: ALL PASS (12 itens).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add server/src/utils server/tests/cpf.test.ts
@@ -387,7 +387,7 @@ git commit -m "feat: cpf validation and masks"
     - Validar linha: nome não vazio, CPF válido, telefone ≥ 10 dígitos, email com `.includes('@')`+`.includes('.')` e 1+ char antes do `@`.
     - Cada erro vira um item em `erros[]` (ex.: `'CPF inválido'`).
 
-- [ ] **Step 1: Escrever teste que falha**
+- [x] **Step 1: Escrever teste que falha**
 
 Create: `server/tests/tableParser.test.ts`
 
@@ -464,12 +464,12 @@ describe('parseLinhas XLSX', () => {
 })
 ```
 
-- [ ] **Step 2: Rodar teste — esperar falha**
+- [x] **Step 2: Rodar teste — esperar falha**
 
 Run: `npm test --workspace server`
 Expected: FAIL — `../src/utils/tableParser.ts` e `../src/types.ts` não existem.
 
-- [ ] **Step 3: Implementar `server/src/types.ts`**
+- [x] **Step 3: Implementar `server/src/types.ts`**
 
 ```ts
 export interface Pessoa {
@@ -513,7 +513,7 @@ export interface ResumoProgresso {
 }
 ```
 
-- [ ] **Step 4: Implementar `server/src/utils/tableParser.ts`**
+- [x] **Step 4: Implementar `server/src/utils/tableParser.ts`**
 
 ```ts
 import { validarCPF, apenasDigitos } from './cpf.ts'
@@ -617,7 +617,7 @@ export async function parseLinhas(opts: {
 
 Nota: `parseLinhas` retorna `Promise<ResultadoParse>` (para o caso XLSX). O teste assíncrono do CSV/TSV já trata.
 
-- [ ] **Step 5: Ajustar teste para Promise**
+- [x] **Step 5: Ajustar teste para Promise**
 
 O teste acima chama `parseLinhas({ texto })` de forma síncrona — como agora é `async`, ajuste o teste:
 
@@ -631,12 +631,12 @@ it('parseia linhas válidas e aplica qtd padrão', async () => {
 
 Faça o `await` nos 3 testes de CSV/TSV (nome: `parseia linhas válidas…`, `aceita cabeçalhos variantes…`, `separa linhas inválidas…`, e o de TSV).
 
-- [ ] **Step 6: Rodar teste — esperar passar**
+- [x] **Step 6: Rodar teste — esperar passar**
 
 Run: `npm test --workspace server`
 Expected: ALL PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add server/src/types.ts server/src/utils/tableParser.ts server/tests/tableParser.test.ts
@@ -676,7 +676,7 @@ Implementação interna:
 
 **Base URL:** `opts.baseUrl ?? 'https://restrita.podiumeventosformaturas.com.br'`. Porta padrão 443 com TLS self-signed.
 
-- [ ] **Step 1: Escrever teste contra mock HTTP (node http injetado via baseUrl)**
+- [x] **Step 1: Escrever teste contra mock HTTP (node http injetado via baseUrl)**
 
 Create: `server/tests/session.test.ts`
 
@@ -771,12 +771,12 @@ describe('PodiumSession em sessão', () => {
 })
 ```
 
-- [ ] **Step 2: Rodar teste — esperar falha**
+- [x] **Step 2: Rodar teste — esperar falha**
 
 Run: `npm test --workspace server`
 Expected: FAIL — `session.ts` não existe.
 
-- [ ] **Step 3: Implementar `server/src/podium/session.ts`**
+- [x] **Step 3: Implementar `server/src/podium/session.ts`**
 
 ```ts
 import { Agent } from 'node:https'
@@ -916,12 +916,12 @@ export class PodiumSession {
 
 Nota: `undici` / `fetch` do Node 18+ aceita `dispatcher`. Em ambiente sem `getSetCookie` (Node < 19.7), o código cai no fallback. Mantemos o valor do cookie em memória (sem persistir senha).
 
-- [ ] **Step 4: Rodar teste — esperar passar**
+- [x] **Step 4: Rodar teste — esperar passar**
 
 Run: `npm test --workspace server`
 Expected: ALL PASS (3 testes do mock).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add server/src/podium server/tests/session.test.ts
@@ -958,7 +958,7 @@ export interface AutomatorDeps {
 }
 ```
 
-- [ ] **Step 1: Escrever teste que falha**
+- [x] **Step 1: Escrever teste que falha**
 
 Create: `server/tests/automator.test.ts`
 
@@ -1048,12 +1048,12 @@ describe('Automator', () => {
 })
 ```
 
-- [ ] **Step 2: Rodar teste — esperar falha**
+- [x] **Step 2: Rodar teste — esperar falha**
 
 Run: `npm test --workspace server`
 Expected: FAIL — `automator.ts` não existe.
 
-- [ ] **Step 3: Implementar `server/src/engine/automator.ts`**
+- [x] **Step 3: Implementar `server/src/engine/automator.ts`**
 
 ```ts
 import type { LinhaJob, Pessoa, ResumoProgresso, StatusLinha } from '../types.ts'
@@ -1127,16 +1127,16 @@ export class Automator {
 }
 ```
 
-- [ ] **Step 4: Ajustar o teste "não reprocessa linha já ok"**
+- [x] **Step 4: Ajustar o teste "não reprocessa linha já ok"**
 
 O Automator filtra `status !== 'ok'`; o teste já cobre esse comportamento. Nenhuma mudança necessária.
 
-- [ ] **Step 5: Rodar teste — esperar passar**
+- [x] **Step 5: Rodar teste — esperar passar**
 
 Run: `npm test --workspace server`
 Expected: ALL PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add server/src/engine/automator.ts server/tests/automator.test.ts
@@ -1204,7 +1204,7 @@ CREATE TABLE IF NOT EXISTS logs (
 );
 ```
 
-- [ ] **Step 1: Escrever teste que falha**
+- [x] **Step 1: Escrever teste que falha**
 
 Create: `server/tests/db.test.ts`
 
@@ -1260,12 +1260,12 @@ describe('Banco', () => {
 })
 ```
 
-- [ ] **Step 2: Rodar teste — esperar falha**
+- [x] **Step 2: Rodar teste — esperar falha**
 
 Run: `npm test --workspace server`
 Expected: FAIL — `db.ts` não existe.
 
-- [ ] **Step 3: Implementar `server/src/data/db.ts`**
+- [x] **Step 3: Implementar `server/src/data/db.ts`**
 
 ```ts
 import Database from 'better-sqlite3'
@@ -1439,7 +1439,7 @@ export class Banco {
 
 Nota: `logs()` retorna `string[]` no contrato, mas a query devolve objetos. Para o teste (`.join(' ')` sobre strings), adapte o retorno: no lugar do `.all`, faça `.all(jobId, limite).map((r: { nivel: string; msg: string; criado_em: string }) => `[${r.nivel}] ${r.msg} (${r.criado_em})`)`. Ajuste a implementação para retornar strings.
 
-- [ ] **Step 3b: Corrigir `logs()` para retornar strings**
+- [x] **Step 3b: Corrigir `logs()` para retornar strings**
 
 ```ts
 logs(jobId: number | null = null, limite = 200): string[] {
@@ -1452,12 +1452,12 @@ logs(jobId: number | null = null, limite = 200): string[] {
 }
 ```
 
-- [ ] **Step 4: Rodar teste — esperar passar**
+- [x] **Step 4: Rodar teste — esperar passar**
 
 Run: `npm test --workspace server`
 Expected: ALL PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add server/src/data/db.ts server/tests/db.test.ts
@@ -1492,7 +1492,7 @@ git commit -m "feat: sqlite persistence layer"
   - Runner: manter um `Map<number, { parar: () => void }>` para cancelamento. O runner usa `Automator` com `persist` ligando a `banco.atualizarLinha` e `banco.registrarLog`, e `getSessao` que faz login real.
   - `index.ts`: `startServer({ port: Number(process.env.PORT ?? 3000) })`, loga IPs de LAN no console com endereço `http://<ip>:3000`.
 
-- [ ] **Step 1: Escrever teste que falha**
+- [x] **Step 1: Escrever teste que falha**
 
 Create: `server/tests/api.test.ts`
 
@@ -1583,12 +1583,12 @@ describe('API', () => {
 
 Nota do teste "salva config sem expor senha": a rota não devolve a senha; a asserção é estrutural (configurado true).
 
-- [ ] **Step 2: Rodar teste — esperar falha**
+- [x] **Step 2: Rodar teste — esperar falha**
 
 Run: `npm test --workspace server`
 Expected: FAIL — `server.ts` não existe.
 
-- [ ] **Step 3: Implementar `server/src/api/server.ts`**
+- [x] **Step 3: Implementar `server/src/api/server.ts`**
 
 ```ts
 import express from 'express'
@@ -1776,7 +1776,7 @@ export async function startServer(opts: StartOpts = {}): Promise<{
 }
 ```
 
-- [ ] **Step 4: Implementar `server/src/index.ts`**
+- [x] **Step 4: Implementar `server/src/index.ts`**
 
 ```ts
 import { networkInterfaces } from 'node:os'
@@ -1805,16 +1805,16 @@ main().catch(e => {
 })
 ```
 
-- [ ] **Step 5: `test-login` devolve a turma real descoberta**
+- [x] **Step 5: `test-login` devolve a turma real descoberta**
 
 O `PodiumSession.login` já redescobre a turma a cada login. Na rota `/api/test-login`, capture o valor: altere o retorno para expor `s.turma()` se você adicionar getter na sessão. Para simplificar, o teste espera apenas `ok: true`. (Turma descoberta automaticamente já é requisito coberto por `PodiumSession.login`.)
 
-- [ ] **Step 6: Rodar teste — esperar passar**
+- [x] **Step 6: Rodar teste — esperar passar**
 
 Run: `npm test --workspace server`
 Expected: ALL PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add server/src/api server/src/index.ts server/tests/api.test.ts
@@ -2246,7 +2246,7 @@ git commit -m "feat: vanilla mobile frontend with config, import, progress"
 - Consumes: `PodiumSession` (Task 4).
 - Produces: `POST /api/test-login` retorna `{ ok, turma }` onde `turma` é o valor real descoberto (`value` da option). `POST /api/jobs` aceita `arquivo` como **base64 string** (vinda do frontend) e converte para `ArrayBuffer` (pois `express.json` não suporta ArrayBuffer direto).
 
-- [ ] **Step 1: Expor a turma descoberta no `PodiumSession`**
+- [x] **Step 1: Expor a turma descoberta no `PodiumSession`**
 
 Em `server/src/podium/session.ts`, guarde a turma descoberta:
 
@@ -2261,7 +2261,7 @@ export class PodiumSession {
 
 Atualize o Step 3 da Task 4 para essas linhas. Se não aplicar, o teste seguinte falha. (Ajuste iterativo: edite `session.ts` para adicionar `this._turma = turma` logo após `const turma = m[1]`.)
 
-- [ ] **Step 2: Atualizar rota `/api/test-login`**
+- [x] **Step 2: Atualizar rota `/api/test-login`**
 
 ```ts
 app.post('/api/test-login', async (req, res) => {
@@ -2281,7 +2281,7 @@ app.post('/api/test-login', async (req, res) => {
 })
 ```
 
-- [ ] **Step 3: Aceitar base64 em `/api/jobs`**
+- [x] **Step 3: Aceitar base64 em `/api/jobs`**
 
 ```ts
 function base64ToArrayBuffer(b64: string): ArrayBuffer {
@@ -2301,7 +2301,7 @@ app.post('/api/jobs', async (req, res) => {
 })
 ```
 
-- [ ] **Step 4: Estender teste da API para base64**
+- [x] **Step 4: Estender teste da API para base64**
 
 Em `server/tests/api.test.ts`, adicione:
 
@@ -2324,12 +2324,12 @@ it('cria job a partir de base64 xlsx', async () => {
 })
 ```
 
-- [ ] **Step 5: Rodar testes — esperar passar**
+- [x] **Step 5: Rodar testes — esperar passar**
 
 Run: `npm test --workspace server`
 Expected: ALL PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add server/src/api/server.ts server/src/podium/session.ts server/tests/api.test.ts
@@ -2395,12 +2395,12 @@ main().catch(e => { console.error(e); process.exit(1) })
 "test:e2e": "tsx tests/e2e.seco.ts"
 ```
 
-- [ ] **Step 3: Rodada real (humano autorizado)**
+- [x] **Step 3: Rodada real (humano autorizado)**
 
 Run: `$env:RIFA_CPF='86…'; $env:RIFA_SENHA='…'; npm run test:e2e --workspace server`
 Expected: login OK, turma impresso, maior Nº real impresso (ex.: `1104`). Se `lerMaiorNumero` devolver `0` na página real, ajuste o regex na Task 4 (Step 3) conforme HTML real do site (copiar trecho da tabela).
 
-- [ ] **Step 4: Submeter 1 rifa real com dados do próprio usuário (autorizado explicitamente)**
+- [x] **Step 4: Submeter 1 rifa real com dados do próprio usuário (autorizado explicitamente)**
 
 Depois da aprovação explícita do usuário (via chat), usar `/api/jobs` com 1 linha real e `/iniciar`; confirmar incremento do Nº na tabela do site. Registrar o Nº no log.
 
@@ -2423,7 +2423,7 @@ git commit -m "test: e2e seco (login + leitura da tabela Nº)"
 - Consumes: Automator deps.
 - Produces: comportamento garantido: cancelar entre linhas **nunca** deixa a linha atual como `ok` sem confirmar submissão; se a linha atual foi submetida mas não confirmada, fica `pendente` e NÃO é re-submetida cegamente (a verificação `n1 >= n0 + qtd` já detecta). Detalhe: quando `deveParar` é true dentro do loop de tentativas, abortar e marcar `pendente`, não `erro`.
 
-- [ ] **Step 1: Adicionar testes**
+- [x] **Step 1: Adicionar testes**
 
 ```ts
 it('cancelamento durante submissão deixa linha pendente (não re-submete)', async () => {
@@ -2459,12 +2459,12 @@ it('retomada não duplica linhas já ok', async () => {
 })
 ```
 
-- [ ] **Step 2: Rodar testes — esperar falhar (cancelamento marca `erro`)**
+- [x] **Step 2: Rodar testes — esperar falhar (cancelamento marca `erro`)**
 
 Run: `npm test --workspace server`
 Expected: `progress[0]?.status` é `erro` (comportamento atual), teste espera `pendente` → FAIL.
 
-- [ ] **Step 3: Ajustar implementação do cancelamento**
+- [x] **Step 3: Ajustar implementação do cancelamento**
 
 Em `server/src/engine/automator.ts`, no bloco que trata `deveParar`:
 
@@ -2497,12 +2497,12 @@ if (ok) {
 }
 ```
 
-- [ ] **Step 4: Rodar testes — esperar passar**
+- [x] **Step 4: Rodar testes — esperar passar**
 
 Run: `npm test --workspace server`
 Expected: ALL PASS (incluindo os novos 2 casos).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add server/src/engine/automator.ts server/tests/automator.test.ts
@@ -2519,22 +2519,22 @@ git commit -m "fix: cancel leaves line pending, resume never duplicates ok lines
 **Interfaces:**
 - Consumes: tudo.
 
-- [ ] **Step 1: Rodar test**
+- [x] **Step 1: Rodar test**
 
 Run: `npm test`
 Expected: tudo verde (server vitest; web echo).
 
-- [ ] **Step 2: Rodar typecheck**
+- [x] **Step 2: Rodar typecheck**
 
 Run: `npm run typecheck`
 Expected: `tsc --noEmit` sem erros.
 
-- [ ] **Step 3: Rodar build**
+- [x] **Step 3: Rodar build**
 
 Run: `npm run build`
 Expected: `server/dist/index.js` gerado.
 
-- [ ] **Step 4: Rodar servidor**
+- [x] **Step 4: Rodar servidor**
 
 Run: `npm start`
 Expected: lista Local + LAN URL.
