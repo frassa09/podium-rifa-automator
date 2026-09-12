@@ -1,11 +1,24 @@
 import { describe, expect, it } from 'vitest'
-import { Automator } from '../src/engine/automator.ts'
+import { Automator, type AutomatorDeps } from '../src/engine/automator.ts'
 import type { LinhaJob, Pessoa } from '../src/types.ts'
 
-const linha = (id: number, qtd = 1, status: LinhaJob['status'] = 'pendente'): LinhaJob => ({
+const linha = (id: number, qtd = 1, status: LinhaJob['status'] = 'pendente', extra: Partial<LinhaJob> = {}): LinhaJob => ({
   id, job_id: 1, seq: id, nome: 'Maria', cpf: '86730169087',
   telefone: '11987654321', email: 'm@x.com', qtd, status, erro: null, numeros: '',
+  base: null, enviadas: 0, ...extra,
 })
+
+function siteMock() {
+  let siteN = 0
+  const submetidas: Pessoa[] = []
+  const deps: AutomatorDeps = {
+    getSessao: async () => ({}) as never,
+    submeterLinha: async (_s: unknown, p: Pessoa) => { submetidas.push(p); siteN += p.qtd },
+    lerMaiorNumero: async () => siteN,
+    log: () => {},
+  }
+  return { deps, get siteN() { return siteN }, submetidas }
+}
 
 function ultimosStatus(progress: LinhaJob[]): Map<number, string> {
   const m = new Map<number, string>()
@@ -15,13 +28,7 @@ function ultimosStatus(progress: LinhaJob[]): Map<number, string> {
 
 describe('Automator', () => {
   it('processa todas as linhas na ordem', async () => {
-    const submetidas: Pessoa[] = []
-    const deps = {
-      getSessao: async () => ({}) as never,
-      submeterLinha: async (_s: unknown, p: Pessoa) => { submetidas.push(p) },
-      lerMaiorNumero: async () => 0,
-      log: () => {},
-    }
+    const { deps, submetidas } = siteMock()
     const a = new Automator(deps)
     const linhas = [linha(1), linha(2), linha(3)]
     const progress: LinhaJob[] = []
@@ -31,20 +38,14 @@ describe('Automator', () => {
   })
 
   it('replica submissões quando qtd > 1', async () => {
-    let chamadas = 0
-    const deps = {
-      getSessao: async () => ({}) as never,
-      submeterLinha: async () => { chamadas++ },
-      lerMaiorNumero: async () => 0,
-      log: () => {},
-    }
+    const { deps, submetidas } = siteMock()
     const a = new Automator(deps)
     await a.start([linha(1, 3)], () => {})
-    expect(chamadas).toBe(3)
+    expect(submetidas).toHaveLength(3)
   })
 
   it('marca erro após 2 tentativas com motivos', async () => {
-    const deps = {
+    const deps: AutomatorDeps = {
       getSessao: async () => ({}) as never,
       submeterLinha: async () => { throw new Error('rede') },
       lerMaiorNumero: async () => 0,
@@ -58,13 +59,7 @@ describe('Automator', () => {
   })
 
   it('não reprocessa linha já ok (resume)', async () => {
-    const submetidas: Pessoa[] = []
-    const deps = {
-      getSessao: async () => ({}) as never,
-      submeterLinha: async (_s: unknown, p: Pessoa) => { submetidas.push(p) },
-      lerMaiorNumero: async () => 0,
-      log: () => {},
-    }
+    const { deps, submetidas } = siteMock()
     const a = new Automator(deps)
     await a.start([linha(1, 1, 'ok'), linha(2)], () => {})
     expect(submetidas).toHaveLength(1)
@@ -72,13 +67,8 @@ describe('Automator', () => {
   })
 
   it('para quando deveParar retorna true e deixa linha pendente', async () => {
-    const deps = {
-      getSessao: async () => ({}) as never,
-      submeterLinha: async () => {},
-      lerMaiorNumero: async () => 0,
-      log: () => {},
-      deveParar: () => true,
-    }
+    const { deps } = siteMock()
+    deps.deveParar = () => true
     const a = new Automator(deps)
     const progress: LinhaJob[] = []
     await a.start([linha(1), linha(2)], l => progress.push(l))
@@ -87,12 +77,7 @@ describe('Automator', () => {
   })
 
   it('emite cadastrando antes do estado final', async () => {
-    const deps = {
-      getSessao: async () => ({}) as never,
-      submeterLinha: async () => {},
-      lerMaiorNumero: async () => 0,
-      log: () => {},
-    }
+    const { deps } = siteMock()
     const a = new Automator(deps)
     const statuses: string[] = []
     await a.start([linha(1)], l => statuses.push(l.status))
@@ -103,13 +88,10 @@ describe('Automator', () => {
   it('cancelamento durante submissão deixa linha pendente (não re-submete)', async () => {
     let chamadas = 0
     let parar = false
-    const deps = {
-      getSessao: async () => ({}) as never,
-      submeterLinha: async () => { chamadas++; if (chamadas === 1) parar = true },
-      lerMaiorNumero: async () => 1000,
-      log: () => {},
-      deveParar: () => parar,
-    }
+    const { deps } = siteMock()
+    const sub = deps.submeterLinha
+    deps.submeterLinha = async (s, p) => { chamadas++; if (chamadas === 1) parar = true; await sub(s, p) }
+    deps.deveParar = () => parar
     const a = new Automator(deps)
     const progress: LinhaJob[] = []
     await a.start([linha(1, 2)], l => progress.push(l))
@@ -118,16 +100,62 @@ describe('Automator', () => {
   })
 
   it('retomada não duplica linhas já ok', async () => {
-    const sub = new Set<number>()
-    const deps = {
+    const { deps, submetidas } = siteMock()
+    const a = new Automator(deps)
+    const linhas = [linha(1, 1, 'ok')]
+    await a.start(linhas, () => {})
+    expect(submetidas).toHaveLength(0)
+  })
+
+  it('não marca ok sem verificação quando a página não retorna números', async () => {
+    const deps: AutomatorDeps = {
       getSessao: async () => ({}) as never,
-      submeterLinha: async () => sub.add(1),
+      submeterLinha: async () => {},
       lerMaiorNumero: async () => 0,
       log: () => {},
     }
     const a = new Automator(deps)
-    const linhas = [linha(1, 1, 'ok')]
-    await a.start(linhas, () => {})
-    expect(sub.size).toBe(0)
+    const progress: LinhaJob[] = []
+    await a.start([linha(1)], l => progress.push(l))
+    expect(progress[progress.length - 1]?.status).toBe('erro')
+  })
+
+  it('cancelar e retomar linha parcial não re-submete o que já entrou', async () => {
+    let siteN = 101
+    const submetidas: Pessoa[] = []
+    const deps: AutomatorDeps = {
+      getSessao: async () => ({}) as never,
+      submeterLinha: async (_s: unknown, p: Pessoa) => { submetidas.push(p); siteN += 1 },
+      lerMaiorNumero: async () => siteN,
+      log: () => {},
+    }
+    const a = new Automator(deps)
+    const l = linha(1, 2, 'pendente', { base: 100, enviadas: 1 })
+    await a.start([l], () => {})
+    expect(submetidas).toHaveLength(1)
+    expect(l.status).toBe('ok')
+    expect(l.enviadas).toBe(2)
+  })
+
+  it('renova sessão a cada tentativa quando a sessão expira', async () => {
+    let renovada = false
+    let siteN = 0
+    const deps: AutomatorDeps = {
+      getSessao: async () => ({ id: renovada ? 2 : 1 }),
+      submeterLinha: async s => {
+        if ((s as { id: number }).id === 1) {
+          renovada = true
+          throw new Error('sessão expirada')
+        }
+        siteN += 1
+      },
+      lerMaiorNumero: async () => siteN,
+      log: () => {},
+    }
+    const a = new Automator(deps)
+    const progress: LinhaJob[] = []
+    await a.start([linha(1)], l => progress.push(l))
+    expect(progress[progress.length - 1]?.status).toBe('ok')
+    expect(siteN).toBe(1)
   })
 })

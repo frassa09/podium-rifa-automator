@@ -20,6 +20,8 @@ export interface LinhaJob {
   status: StatusLinha
   erro: string | null
   numeros: string
+  base: number | null
+  enviadas: number
 }
 
 export type StatusJob = 'pendente' | 'rodando' | 'concluido' | 'pausado' | 'cancelado'

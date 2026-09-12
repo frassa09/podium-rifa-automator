@@ -46,7 +46,9 @@ export class Banco {
         qtd INTEGER NOT NULL DEFAULT 1,
         status TEXT NOT NULL DEFAULT 'pendente',
         erro TEXT,
-        numeros TEXT NOT NULL DEFAULT ''
+        numeros TEXT NOT NULL DEFAULT '',
+        base INTEGER,
+        enviadas INTEGER NOT NULL DEFAULT 0
       );
       CREATE TABLE IF NOT EXISTS logs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -56,6 +58,9 @@ export class Banco {
         criado_em TEXT NOT NULL DEFAULT (datetime('now'))
       );
     `)
+    const cols = db.prepare('PRAGMA table_info(job_linhas)').all() as { name: string }[]
+    if (!cols.some(c => c.name === 'base')) db.exec('ALTER TABLE job_linhas ADD COLUMN base INTEGER')
+    if (!cols.some(c => c.name === 'enviadas')) db.exec('ALTER TABLE job_linhas ADD COLUMN enviadas INTEGER NOT NULL DEFAULT 0')
     db.close()
   }
 
@@ -121,7 +126,7 @@ export class Banco {
   atualizarLinha(l: LinhaJob): void {
     const db = this.novaConexao()
     try {
-      db.prepare('UPDATE job_linhas SET status = ?, erro = ?, numeros = ? WHERE id = ?').run(l.status, l.erro, l.numeros, l.id)
+      db.prepare('UPDATE job_linhas SET status = ?, erro = ?, numeros = ?, base = ?, enviadas = ? WHERE id = ?').run(l.status, l.erro, l.numeros, l.base, l.enviadas, l.id)
     } finally {
       db.close()
     }

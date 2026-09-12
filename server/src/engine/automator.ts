@@ -8,7 +8,6 @@ export interface AutomatorDeps {
   deveParar?: () => boolean
   onProgress?: (l: LinhaJob) => void
   esperaRetryMs?: number
-  cancelarJob?: (jobId: number) => boolean
 }
 
 const MAX_TENTATIVAS = 3 // 1 tentativa + 2 retries
@@ -16,14 +15,9 @@ const MAX_TENTATIVAS = 3 // 1 tentativa + 2 retries
 export class Automator {
   constructor(private deps: AutomatorDeps) {}
 
-  cancelar(jobId: number): boolean {
-    return this.deps.cancelarJob?.(jobId) ?? false
-  }
-
   async start(linhas: LinhaJob[], onProgress: (l: LinhaJob) => void = () => {}): Promise<void> {
     const { submeterLinha, lerMaiorNumero, deveParar, log } = this.deps
     const pendentes = linhas.filter(l => l.status !== 'ok')
-    const sessao = await this.deps.getSessao()
 
     for (const linha of pendentes) {
       if (deveParar?.()) {
@@ -36,11 +30,18 @@ export class Automator {
       onProgress(linha)
       let ok = false
       let ultimoErro = ''
-      const n0 = await lerMaiorNumero(sessao).catch(() => 0)
+      let sessao = await this.deps.getSessao()
+      if (linha.base === null) {
+        const n0 = await lerMaiorNumero(sessao).catch(() => 0)
+        linha.base = n0
+        onProgress(linha)
+      }
+      let restantes = Math.max(linha.qtd - linha.enviadas, 0)
       for (let tent = 0; tent < MAX_TENTATIVAS && !ok; tent++) {
         if (deveParar?.()) break
         try {
-          for (let k = 0; k < linha.qtd; k++) {
+          sessao = await this.deps.getSessao()
+          for (let k = 0; k < restantes; k++) {
             if (deveParar?.()) break
             await submeterLinha(sessao, {
               nome: linha.nome,
@@ -49,12 +50,15 @@ export class Automator {
               email: linha.email,
               qtd: 1,
             })
+            linha.enviadas += 1
+            onProgress(linha)
           }
           const n1 = await lerMaiorNumero(sessao)
-          if (n1 >= n0 + linha.qtd || n0 === 0) {
+          if (n1 >= (linha.base ?? 0) + linha.qtd) {
             ok = true
           } else {
-            ultimoErro = `Nº não incrementou (${n0}→${n1})`
+            restantes = (linha.base ?? 0) + linha.qtd - n1
+            ultimoErro = `Nº não incrementou (${linha.base}→${n1})`
             log(ultimoErro, 'warn')
           }
         } catch (e) {

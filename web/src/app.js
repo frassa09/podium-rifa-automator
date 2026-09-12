@@ -83,9 +83,17 @@ $('#btn-importar').addEventListener('click', async () => {
     st.textContent = invalidas.length ? `${invalidas.length} linha(s) inválida(s)` : msg
     if (invalidas.length) {
       avisos.hidden = false
-      avisos.innerHTML = '<strong>Linhas com erro (não importadas):</strong><ul>' +
-        invalidas.map(i => `<li>${i.pessoa?.nome || '(sem nome)'} — ${i.erros.join(', ')}</li>`).join('') +
-        '</ul>'
+      avisos.innerHTML = ''
+      const strong = document.createElement('strong')
+      strong.textContent = 'Linhas com erro (não importadas):'
+      avisos.appendChild(strong)
+      const ul = document.createElement('ul')
+      for (const i of invalidas) {
+        const li = document.createElement('li')
+        li.textContent = `${i.pessoa?.nome || '(sem nome)'} — ${i.erros.join(', ')}`
+        ul.appendChild(li)
+      }
+      avisos.appendChild(ul)
     }
   }
 })
@@ -96,8 +104,17 @@ function renderLinhas() {
   ul.innerHTML = ''
   for (const l of state.linhas) {
     const li = document.createElement('li')
-    const texto = `${l.nome}<br><small>${l.status === 'erro' ? l.erro : (l.numeros || '')}</small>`
-    li.innerHTML = `<span class="st ${l.status}"></span><span>${texto}</span><span>${l.status}</span>`
+    const dot = document.createElement('span')
+    dot.className = `st ${l.status}`
+    const corpo = document.createElement('span')
+    corpo.textContent = l.nome
+    corpo.appendChild(document.createElement('br'))
+    const small = document.createElement('small')
+    small.textContent = l.status === 'erro' ? l.erro : (l.numeros || '')
+    corpo.appendChild(small)
+    const status = document.createElement('span')
+    status.textContent = l.status
+    li.append(dot, corpo, status)
     ul.appendChild(li)
   }
 }
@@ -110,8 +127,13 @@ async function refreshJob() {
     $('#r-ok').textContent = d.resumo.ok
     $('#r-erro').textContent = d.resumo.erro
     $('#r-pend').textContent = d.resumo.pendente
-    $('#job-header').innerHTML =
-      `Job #${d.job.id} — status <b>${d.job.status}</b> (criado ${d.job.criado_em})`
+    const h = $('#job-header')
+    h.textContent = ''
+    h.append(`Job #${d.job.id} — status `)
+    const b = document.createElement('b')
+    b.textContent = d.job.status
+    h.appendChild(b)
+    h.append(` (criado ${d.job.criado_em})`)
     state.linhas = d.linhas
     renderLinhas()
     const logs = d.logs.join('\n')

@@ -122,12 +122,13 @@ export async function startServer(opts: StartOpts = {}): Promise<{
   async function rodarJob(jobId: number): Promise<void> {
     const config = banco.lerConfig()
     if (!config) return
-    let sessao = await PodiumSession.login(config.cpf, config.senha)
+    let sessao: PodiumSession | null = null
     let deveParar = false
     const parar = () => { deveParar = true }
     runners.set(jobId, { parar })
 
     try {
+      sessao = await PodiumSession.login(config.cpf, config.senha)
       const automator = new Automator({
         getSessao: async () => sessao,
         submeterLinha: async (s, p) => {
@@ -148,6 +149,9 @@ export async function startServer(opts: StartOpts = {}): Promise<{
         banco.atualizarLinha(l)
       )
       banco.atualizarStatusJob(jobId, deveParar ? 'pendente' : 'concluido')
+    } catch (e) {
+      banco.registrarLog(`Erro ao rodar job #${jobId}: ${(e as Error).message}`, 'error', jobId)
+      banco.atualizarStatusJob(jobId, 'pendente')
     } finally {
       runners.delete(jobId)
     }
@@ -158,6 +162,10 @@ export async function startServer(opts: StartOpts = {}): Promise<{
     const config = banco.lerConfig()
     if (!config) {
       res.status(400).json({ ok: false, erro: 'Configure o login primeiro' })
+      return
+    }
+    if (runners.has(id)) {
+      res.status(409).json({ ok: false, erro: 'Job já está rodando' })
       return
     }
     banco.registrarLog(`Iniciando job #${id}`, 'info', id)
