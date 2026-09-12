@@ -7,6 +7,7 @@ import type { Pessoa } from '../src/types.ts'
 // Mock server que replica o comportamento do site (nenhum TLS).
 let srv: Server
 let base: string
+let capturedRegistrar = ''
 
 const TURMAS_OPTIONS = '<select><option value="">Selecione</option><option value="6474">Colégio Dom Jaime - Turma 303</option></select>'
 
@@ -44,6 +45,7 @@ beforeAll(async () => {
         return
       }
       if (u.pathname === '/registrar_rifa.php') {
+        capturedRegistrar = body.join('')
         res.setHeader('Set-Cookie', 'PHPSESSID=abc123; path=/')
         res.statusCode = 302
         res.setHeader('Location', '/main.php?conteudo=form_rifa')
@@ -75,10 +77,13 @@ describe('PodiumSession.login', () => {
 })
 
 describe('PodiumSession em sessão', () => {
-  it('submete rifa com máscaras e lê maior Nº', async () => {
+  it('submete rifa com máscaras, campos e botão enviar, e lê maior Nº', async () => {
     const s = await PodiumSession.login('86730169087', 'senha123', { baseUrl: base })
     const p: Pessoa = { nome: 'Maria', cpf: '86730169087', telefone: '11987654321', email: 'm@x.com', qtd: 1 }
     await s.submeterRifa(p)
+    expect(capturedRegistrar).toContain('enviar=Enviar')
+    expect(capturedRegistrar).toContain('campos%5Bnome%5D=Maria')
+    expect(capturedRegistrar).toContain('campos%5Bcpf%5D=867.301.690-87')
     expect(await s.lerMaiorNumero()).toBe(1104)
     expect(await s.checarSessao()).toBe(true)
   })

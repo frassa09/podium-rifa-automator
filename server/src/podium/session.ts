@@ -119,6 +119,7 @@ export class PodiumSession {
       'campos[cpf]': maskCPF(p.cpf),
       'campos[telefone]': maskPhone(p.telefone),
       'campos[email]': p.email,
+      enviar: 'Enviar',
     }).toString()
     await this.req('/registrar_rifa.php', { method: 'POST', body })
   }
