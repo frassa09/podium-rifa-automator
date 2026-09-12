@@ -70,6 +70,7 @@ input, textarea {
 }
 .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .btn:disabled { opacity: 0.5; }
+.btn-mini { padding: 6px 10px; font-size: 0.75rem; font-weight: 600; }
 
 .status { min-height: 1.2em; font-size: 0.9rem; }
 .status.ok { color: var(--ok); }

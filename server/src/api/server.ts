@@ -5,8 +5,9 @@ import { fileURLToPath } from 'node:url'
 import { Banco } from '../data/db.ts'
 import { Automator } from '../engine/automator.ts'
 import { PodiumSession } from '../podium/session.ts'
-import { parseLinhas } from '../utils/tableParser.ts'
-import type { Config } from '../types.ts'
+import { parseLinhas, validarPessoa, type LinhaParseada } from '../utils/tableParser.ts'
+import { apenasDigitos } from '../utils/cpf.ts'
+import type { Config, Pessoa } from '../types.ts'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const WEB_DIR = join(__dirname, '..', '..', '..', 'web', 'src')
@@ -77,13 +78,32 @@ export async function startServer(opts: StartOpts = {}): Promise<{
 
   app.post('/api/jobs', async (req, res) => {
     try {
-      const { arquivo, texto, nomeArquivo } = req.body as {
+      const { arquivo, texto, nomeArquivo, pessoas } = req.body as {
         arquivo?: string
         texto?: string
         nomeArquivo?: string
+        pessoas?: Pessoa[]
       }
-      const buf = arquivo ? base64ToArrayBuffer(arquivo) : undefined
-      const parsed = await parseLinhas({ arquivo: buf, texto, nomeArquivo })
+      let parsed: { ok: LinhaParseada[]; invalidas: LinhaParseada[] }
+      if (Array.isArray(pessoas)) {
+        const norm: Pessoa[] = pessoas.map(p => ({
+          nome: (p?.nome ?? '').trim(),
+          cpf: apenasDigitos(String(p?.cpf ?? '')),
+          telefone: apenasDigitos(String(p?.telefone ?? '')),
+          email: (p?.email ?? '').trim(),
+          qtd: Number(p?.qtd),
+        }))
+        const ok: LinhaParseada[] = []
+        const invalidas: LinhaParseada[] = []
+        for (const pessoa of norm) {
+          const erros = validarPessoa(pessoa)
+          ;(erros.length ? invalidas : ok).push({ pessoa, erros })
+        }
+        parsed = { ok, invalidas }
+      } else {
+        const buf = arquivo ? base64ToArrayBuffer(arquivo) : undefined
+        parsed = await parseLinhas({ arquivo: buf, texto, nomeArquivo })
+      }
       if (parsed.invalidas.length) {
         res.status(422).json({ ok: false, invalidas: parsed.invalidas })
         return

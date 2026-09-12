@@ -14,6 +14,7 @@
     <h1>Rifa Automator</h1>
     <nav class="tabs">
       <button class="tab" data-tela="config" aria-selected="true">Login</button>
+      <button class="tab" data-tela="manual" aria-selected="false">Manual</button>
       <button class="tab" data-tela="importar" aria-selected="false">Importar</button>
       <button class="tab" data-tela="progresso" aria-selected="false">Progresso</button>
     </nav>
@@ -31,6 +32,38 @@
         <button type="submit" class="btn btn-primary">Salvar e testar login</button>
         <div id="cfg-status" class="status" role="status"></div>
       </form>
+    </section>
+
+    <section id="tela-manual" class="tela" hidden>
+      <form id="form-manual" class="card" autocomplete="off">
+        <h2>Adicionar pessoa</h2>
+        <label>Nome
+          <input id="m-nome" name="nome" required />
+        </label>
+        <label>CPF
+          <input id="m-cpf" name="cpf" inputmode="numeric" placeholder="000.000.000-00" required />
+        </label>
+        <label>Telefone
+          <input id="m-tel" name="telefone" inputmode="numeric" placeholder="(00) 00000-0000" required />
+        </label>
+        <label>E-mail
+          <input id="m-email" name="email" type="email" inputmode="email" required />
+        </label>
+        <label>Rifas (qtd)
+          <input id="m-qtd" name="qtd" type="number" inputmode="numeric" min="1" step="1" value="1" required />
+        </label>
+        <div class="botoes-job">
+          <button type="submit" class="btn btn-primary">Adicionar</button>
+          <button type="button" class="btn" id="btn-limpar">Limpar lista</button>
+        </div>
+        <div id="m-status" class="status" role="status"></div>
+      </form>
+      <div class="card">
+        <h2>Lista <span id="m-total" class="dica"></span></h2>
+        <ul id="m-lista" class="linhas"></ul>
+        <button id="btn-criar" class="btn btn-primary" disabled>Criar job e iniciar</button>
+        <div id="m-criar-status" class="status" role="status"></div>
+      </div>
     </section>
 
     <section id="tela-importar" class="tela" hidden>

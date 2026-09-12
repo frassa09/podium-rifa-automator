@@ -36,7 +36,7 @@ function findCol(headers: string[]): Record<keyof Pessoa, number> {
   return idx as Record<keyof Pessoa, number>
 }
 
-function validarLinha(p: Pessoa): string[] {
+export function validarPessoa(p: Pessoa): string[] {
   const erros: string[] = []
   if (!p.nome || !p.nome.trim()) erros.push('Nome obrigatório')
   if (!validarCPF(p.cpf)) erros.push('CPF inválido')
@@ -67,7 +67,7 @@ function deArray(rows: unknown[][]): ResultadoParse {
       qtd: idx.qtd !== undefined ? Number(s(idx.qtd)) || 0 : 1,
     }
     out.total++
-    const erros = validarLinha(pessoa)
+    const erros = validarPessoa(pessoa)
     ;(erros.length ? out.invalidas : out.ok).push({ pessoa, erros })
   }
   return out

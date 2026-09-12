@@ -97,6 +97,45 @@ describe('API', () => {
     expect(j.jobId).toBeTruthy()
   })
 
+  it('cria job a partir de lista: manual', async () => {
+    const r = await fetch(`${base}/api/jobs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        pessoas: [
+          { nome: 'João', cpf: '867.301.690-87', telefone: '(11) 98765-4321', email: 'joao@x.com', qtd: 2 },
+          { nome: 'Maria', cpf: '86730169087', telefone: '11987654321', email: 'maria@x.com', qtd: '1' },
+        ],
+      }),
+    })
+    expect(r.status).toBe(200)
+    const j = await r.json()
+    expect(j.jobId).toBeTruthy()
+    const det = await (await fetch(`${base}/api/jobs/${j.jobId}`)).json()
+    expect(det.linhas).toHaveLength(2)
+    expect(det.linhas[0].cpf).toBe('86730169087')
+    expect(det.linhas[0].qtd).toBe(2)
+    expect(det.linhas[1].qtd).toBe(1)
+  })
+
+  it('rejeita pessoas inválidas no manual', async () => {
+    const r = await fetch(`${base}/api/jobs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        pessoas: [
+          { nome: 'Zé', cpf: '123', telefone: '1', email: 'x', qtd: 0 },
+          { nome: 'Boa', cpf: '86730169087', telefone: '11987654321', email: 'boa@x.com', qtd: 1 },
+        ],
+      }),
+    })
+    expect(r.status).toBe(422)
+    const j = await r.json()
+    expect(j.ok).toBe(false)
+    expect(j.invalidas).toHaveLength(1)
+    expect(j.invalidas[0].erros.length).toBeGreaterThan(0)
+  })
+
   it('cancela job não-rodando e fica pendente', async () => {
     const r = await fetch(`${base}/api/jobs`, {
       method: 'POST',
