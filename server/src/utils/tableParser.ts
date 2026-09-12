@@ -89,7 +89,7 @@ export async function parseLinhas(opts: {
   if (opts.arquivo) {
     const XLSX = await import('xlsx')
     const wb = XLSX.read(new Uint8Array(opts.arquivo), { type: 'array' })
-    const ws = wb.Sheets[wb.SheetNames[0]!]
+    const ws = wb.Sheets[wb.SheetNames[0]!]!
     const rows = XLSX.utils.sheet_to_json(ws, { header: 1 }) as unknown[][]
     return deArray(rows)
   }
