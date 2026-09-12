@@ -79,4 +79,21 @@ describe('API', () => {
     expect(det.linhas).toHaveLength(1)
     expect(det.resumo.total).toBe(1)
   })
+
+  it('cria job a partir de base64 xlsx', async () => {
+    const XLSX = await import('xlsx')
+    const ws = XLSX.utils.aoa_to_sheet([['Nome', 'CPF', 'Telefone', 'E-mail', 'Qtd'], ['Ana', '86730169087', '11987654321', 'ana@x.com', 2]])
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, 'a')
+    const buf = XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer
+    const base64 = Buffer.from(new Uint8Array(buf)).toString('base64')
+    const r = await fetch(`${base}/api/jobs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ arquivo: base64, nomeArquivo: 'x.xlsx' }),
+    })
+    expect(r.status).toBe(200)
+    const j = await r.json()
+    expect(j.jobId).toBeTruthy()
+  })
 })

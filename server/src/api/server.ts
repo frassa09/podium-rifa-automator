@@ -16,6 +16,11 @@ interface Runner {
   parar: () => void
 }
 
+function base64ToArrayBuffer(b64: string): ArrayBuffer {
+  const bin = Buffer.from(b64, 'base64')
+  return bin.buffer.slice(bin.byteOffset, bin.byteOffset + bin.byteLength) as ArrayBuffer
+}
+
 export interface StartOpts {
   port?: number
   db?: Banco
@@ -65,21 +70,21 @@ export async function startServer(opts: StartOpts = {}): Promise<{
     }
     try {
       const s = await PodiumSession.login(cpf, senha)
-      const turma = (await banco.lerConfig())?.turma ?? ''
-      res.json({ ok: true, turma: s.cookieHead ? turma || 'turma-ok' : '' })
+      res.json({ ok: true, turma: s.turma })
     } catch (e) {
-      res.status(200).json({ ok: false, erro: (e as Error).message })
+      res.json({ ok: false, erro: (e as Error).message })
     }
   })
 
   app.post('/api/jobs', async (req, res) => {
     try {
       const { arquivo, texto, nomeArquivo } = req.body as {
-        arquivo?: ArrayBuffer
+        arquivo?: string
         texto?: string
         nomeArquivo?: string
       }
-      const parsed = await parseLinhas({ arquivo, texto, nomeArquivo })
+      const buf = arquivo ? base64ToArrayBuffer(arquivo) : undefined
+      const parsed = await parseLinhas({ arquivo: buf, texto, nomeArquivo })
       if (parsed.invalidas.length) {
         res.status(422).json({ ok: false, invalidas: parsed.invalidas })
         return

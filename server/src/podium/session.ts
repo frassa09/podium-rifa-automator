@@ -27,6 +27,7 @@ interface Cookie {
 export class PodiumSession {
   private cookies: Cookie[] = []
   private baseUrl: string
+  private _turma = ''
 
   private constructor(baseUrl: string) {
     this.baseUrl = baseUrl
@@ -34,6 +35,10 @@ export class PodiumSession {
 
   get cookieHead(): string {
     return this.cookies.map(c => `${c.nome}=${c.valor}`).join('; ')
+  }
+
+  get turma(): string {
+    return this._turma
   }
 
   private absorverCookies(headers: Headers): void {
@@ -83,6 +88,7 @@ export class PodiumSession {
       const m = /value="(\d+)"/.exec(turmas)
       if (!m?.[1]) throw new ErroLogin('cpf', 'CPF não encontrado (turmas não retornadas)')
       const turma = m[1]
+      s._turma = turma
 
       const r3 = await s.req('/autenticacao.php', {
         method: 'POST',
