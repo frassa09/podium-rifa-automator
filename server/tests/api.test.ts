@@ -37,7 +37,10 @@ describe('API', () => {
     })
     expect(await r1.json()).toEqual({ configurado: true })
     const r2 = await fetch(`${base}/api/config`)
-    expect(await r2.json()).toEqual({ configurado: true })
+    const c2 = await r2.json()
+    expect(c2.configurado).toBe(true)
+    expect(c2.cpf).toBe('86730169087')
+    expect('senha' in c2).toBe(false)
     // rota não retorna a senha em lugar algum — verificado manualmente na resposta
   })
 

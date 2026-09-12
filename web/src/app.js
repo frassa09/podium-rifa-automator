@@ -24,6 +24,26 @@ async function api(path, opts = {}) {
   return r.json()
 }
 
+async function refreshLoginBadge() {
+  const b = $('#login-badge')
+  try {
+    const c = await api('/api/config')
+    b.hidden = false
+    if (c.configurado) {
+      b.className = 'login-badge ok'
+      b.textContent = c.turma
+        ? `Conta ativa: ${maskCPF(c.cpf)} · Turma ${c.turma}`
+        : `Conta ativa: ${maskCPF(c.cpf)}`
+    } else {
+      b.className = 'login-badge nao'
+      b.textContent = 'Nenhuma conta configurada — use a aba Login'
+    }
+  } catch {
+    b.hidden = true
+  }
+}
+refreshLoginBadge()
+
 // ————— Configuração —————
 $('#form-config').addEventListener('submit', async e => {
   e.preventDefault()
@@ -38,10 +58,11 @@ $('#form-config').addEventListener('submit', async e => {
     if (r.ok) {
       await api('/api/config', {
         method: 'POST',
-        body: JSON.stringify({ cpf: $('#cfg-cpf').value, senha: $('#cfg-senha').value }),
+        body: JSON.stringify({ cpf: $('#cfg-cpf').value, senha: $('#cfg-senha').value, turma: r.turma }),
       })
       st.className = 'status ok'
       st.textContent = 'Login OK! Turma detectada automaticamente.'
+      refreshLoginBadge()
     } else {
       st.className = 'status erro'
       st.textContent = r.erro
@@ -160,14 +181,7 @@ $('#btn-criar').addEventListener('click', async () => {
     const r = await api('/api/jobs', { method: 'POST', body: JSON.stringify({ pessoas: manual }) })
     state.jobId = r.jobId
     st.className = 'status ok'
-    st.textContent = `Job #${r.jobId} criado.`
-    try {
-      await api(`/api/jobs/${r.jobId}/iniciar`, { method: 'POST' })
-      st.textContent = `Job #${r.jobId} criado e iniciado.`
-    } catch (err) {
-      st.className = 'status erro'
-      st.textContent = `Job #${r.jobId} criado, mas não iniciou: ${err.message}`
-    }
+    st.textContent = `Job #${r.jobId} criado — nenhuma rifa foi enviada. Inicie em Progresso.`
     manual = []
     renderManual()
     setTimeout(() => trocarTela('progresso'), 500)

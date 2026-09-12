@@ -46,7 +46,11 @@ export async function startServer(opts: StartOpts = {}): Promise<{
 
   app.get('/api/config', (_req, res) => {
     const c = banco.lerConfig()
-    res.json({ configurado: !!c })
+    if (!c) {
+      res.json({ configurado: false })
+      return
+    }
+    res.json({ configurado: true, cpf: c.cpf, turma: c.turma })
   })
 
   app.post('/api/config', (req, res) => {
