@@ -85,7 +85,7 @@ export class PodiumSession {
       })
       const json = (await r1.json()) as { turmas?: string }
       const turmas = json.turmas ?? ''
-      const m = /value="(\d+)"/.exec(turmas)
+      const m = /value=['"](\d+)['"]/.exec(turmas)
       if (!m?.[1]) throw new ErroLogin('cpf', 'CPF não encontrado (turmas não retornadas)')
       const turma = m[1]
       s._turma = turma
