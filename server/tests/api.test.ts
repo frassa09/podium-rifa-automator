@@ -96,4 +96,18 @@ describe('API', () => {
     const j = await r.json()
     expect(j.jobId).toBeTruthy()
   })
+
+  it('cancela job não-rodando e fica pendente', async () => {
+    const r = await fetch(`${base}/api/jobs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ texto: 'Nome;CPF;Telefone;E-mail\nBia;86730169087;11987654321;bia@x.com' }),
+    })
+    const { jobId } = await r.json()
+    banco.atualizarStatusJob(jobId, 'rodando')
+    const r2 = await fetch(`${base}/api/jobs/${jobId}/cancelar`, { method: 'POST' })
+    expect(await r2.json()).toEqual({ ok: true })
+    const det = await (await fetch(`${base}/api/jobs/${jobId}`)).json()
+    expect(det.job.status).toBe('pendente')
+  })
 })

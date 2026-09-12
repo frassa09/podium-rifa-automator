@@ -148,8 +148,7 @@ export async function startServer(opts: StartOpts = {}): Promise<{
       await automator.start(banco.linhasDoJob(jobId), l =>
         banco.atualizarLinha(l)
       )
-      const resumo = banco.resumoJob(jobId)
-      banco.atualizarStatusJob(jobId, resumo.erro > 0 ? 'concluido' : 'concluido')
+      banco.atualizarStatusJob(jobId, deveParar ? 'pendente' : 'concluido')
     } finally {
       runners.delete(jobId)
     }
@@ -171,6 +170,7 @@ export async function startServer(opts: StartOpts = {}): Promise<{
   app.post('/api/jobs/:id/cancelar', (req, res) => {
     const id = Number(req.params.id)
     runners.get(id)?.parar()
+    banco.cancelarJob(id)
     banco.registrarLog('Cancelamento solicitado', 'warn', id)
     res.json({ ok: true })
   })
