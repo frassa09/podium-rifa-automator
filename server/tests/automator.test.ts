@@ -158,4 +158,90 @@ describe('Automator', () => {
     expect(progress[progress.length - 1]?.status).toBe('ok')
     expect(siteN).toBe(1)
   })
+
+  it('não duplica quando a submissão foi processada mas a resposta lança erro', async () => {
+    let siteN = 500
+    const submetidas: Pessoa[] = []
+    const deps: AutomatorDeps = {
+      getSessao: async () => ({}) as never,
+      submeterLinha: async (_s: unknown, p: Pessoa) => {
+        submetidas.push(p)
+        siteN += 1
+        throw new Error('rede caiu após enviar')
+      },
+      lerMaiorNumero: async () => siteN,
+      log: () => {},
+    }
+    const a = new Automator(deps)
+    const l = linha(1, 1, 'pendente', { base: 500 })
+    const progress: LinhaJob[] = []
+    await a.start([l], x => progress.push(x))
+    expect(submetidas).toHaveLength(1)
+    expect(progress[progress.length - 1]?.status).toBe('ok')
+  })
+
+  it('não re-submete quando a criação não pode ser confirmada (parada de segurança)', async () => {
+    let siteN = 100
+    let leituras = 0
+    const submetidas: Pessoa[] = []
+    const deps: AutomatorDeps = {
+      getSessao: async () => ({}) as never,
+      submeterLinha: async (_s: unknown, p: Pessoa) => {
+        submetidas.push(p)
+        siteN += 1
+        throw new Error('sem diagnóstico de rede')
+      },
+      lerMaiorNumero: async () => {
+        leituras++
+        if (leituras > 1) throw new Error('leitura indisponível')
+        return siteN
+      },
+      log: () => {},
+    }
+    const a = new Automator(deps)
+    const l = linha(1, 1, 'pendente', { base: 100 })
+    await expect(a.start([l])).rejects.toThrow()
+    expect(submetidas).toHaveLength(1)
+    expect(l.status).toBe('erro')
+    expect(l.erro).toContain('não confirmada')
+  })
+
+  it('não duplica em lote quando uma submissão do meio falha após criar', async () => {
+    let siteN = 0
+    let chamadas = 0
+    const submetidas: Pessoa[] = []
+    const deps: AutomatorDeps = {
+      getSessao: async () => ({}) as never,
+      submeterLinha: async (_s: unknown, p: Pessoa) => {
+        submetidas.push(p)
+        siteN += 1
+        chamadas++
+        if (chamadas === 2) throw new Error('falha na 2ª submissão')
+      },
+      lerMaiorNumero: async () => siteN,
+      log: () => {},
+    }
+    const a = new Automator(deps)
+    const l = linha(1, 2)
+    await a.start([l], () => {})
+    expect(submetidas).toHaveLength(2)
+    expect(l.status).toBe('ok')
+    expect(siteN).toBe(2)
+  })
+
+  it('não envia nada quando o Nº do site já alcançou o alvo da linha', async () => {
+    const submetidas: Pessoa[] = []
+    const deps: AutomatorDeps = {
+      getSessao: async () => ({}) as never,
+      submeterLinha: async (_s: unknown, p: Pessoa) => { submetidas.push(p) },
+      lerMaiorNumero: async () => 102,
+      log: () => {},
+    }
+    const a = new Automator(deps)
+    const l = linha(1, 2, 'pendente', { base: 100, enviadas: 0 })
+    await a.start([l], () => {})
+    expect(submetidas).toHaveLength(0)
+    expect(l.status).toBe('ok')
+    expect(l.enviadas).toBe(2)
+  })
 })
