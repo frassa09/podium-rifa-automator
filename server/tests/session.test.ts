@@ -44,9 +44,6 @@ beforeAll(async () => {
         return
       }
       if (u.pathname === '/registrar_rifa.php') {
-        const parsed = Object.fromEntries(
-          body.join('').split('&').map(kv => kv.split('='))
-        ) as Record<string, string>
         res.setHeader('Set-Cookie', 'PHPSESSID=abc123; path=/')
         res.statusCode = 302
         res.setHeader('Location', '/main.php?conteudo=form_rifa')

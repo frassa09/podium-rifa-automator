@@ -97,7 +97,7 @@ export class PodiumSession {
       if (!r3.ok && r3.status !== 302) {
         // login_falhou vem com 200; detecta pelo corpo
         const corpo = await r3.text()
-        if (!s.cookieHead.includes('PHPSESSID')) throw new ErroLogin('credencial', 'Credencial inválida')
+        if (corpo.includes('login_falhou')) throw new ErroLogin('credencial', 'Credencial inválida')
       }
       if (!s.cookieHead.includes('PHPSESSID')) {
         throw new ErroLogin('credencial', 'Credencial inválida (sem sessão)')

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { Automator } from '../src/engine/automator.ts'
 import type { LinhaJob, Pessoa } from '../src/types.ts'
 

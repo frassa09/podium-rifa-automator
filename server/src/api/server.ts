@@ -1,6 +1,5 @@
 import express from 'express'
 import { createServer, type Server } from 'node:http'
-import type { AddressInfo } from 'node:net'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Banco } from '../data/db.ts'
