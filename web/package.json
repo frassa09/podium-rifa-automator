@@ -1,0 +1,10 @@
+{
+  "name": "podium-rifa-automator-web",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "test": "echo \"web: no unit tests (vanilla JS)\"",
+    "typecheck": "echo \"web: no ts check (vanilla JS)\"",
+    "lint": "echo \"web: no lint (vanilla JS)\""
+  }
+}
