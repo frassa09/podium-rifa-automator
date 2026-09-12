@@ -8,12 +8,17 @@ export interface AutomatorDeps {
   deveParar?: () => boolean
   onProgress?: (l: LinhaJob) => void
   esperaRetryMs?: number
+  cancelarJob?: (jobId: number) => boolean
 }
 
 const MAX_TENTATIVAS = 3 // 1 tentativa + 2 retries
 
 export class Automator {
   constructor(private deps: AutomatorDeps) {}
+
+  cancelar(jobId: number): boolean {
+    return this.deps.cancelarJob?.(jobId) ?? false
+  }
 
   async start(linhas: LinhaJob[], onProgress: (l: LinhaJob) => void = () => {}): Promise<void> {
     const { submeterLinha, lerMaiorNumero, deveParar, log } = this.deps
@@ -22,8 +27,8 @@ export class Automator {
 
     for (const linha of pendentes) {
       if (deveParar?.()) {
-        linha.status = 'erro'
-        linha.erro = 'Cancelado pelo usuário'
+        linha.status = 'pendente'
+        linha.erro = null
         onProgress(linha)
         break
       }
@@ -33,8 +38,10 @@ export class Automator {
       let ultimoErro = ''
       const n0 = await lerMaiorNumero(sessao).catch(() => 0)
       for (let tent = 0; tent < MAX_TENTATIVAS && !ok; tent++) {
+        if (deveParar?.()) break
         try {
           for (let k = 0; k < linha.qtd; k++) {
+            if (deveParar?.()) break
             await submeterLinha(sessao, {
               nome: linha.nome,
               cpf: linha.cpf,
@@ -58,6 +65,9 @@ export class Automator {
       }
       if (ok) {
         linha.status = 'ok'
+        linha.erro = null
+      } else if (deveParar?.()) {
+        linha.status = 'pendente'
         linha.erro = null
       } else {
         linha.status = 'erro'

@@ -46,4 +46,20 @@ describe('Banco', () => {
     expect(banco.logs(0, 10).join(' ')).toContain('olá')
     limpar()
   })
+
+  it('cancelarJob cancela job rodando e é idempotente', () => {
+    const { banco, limpar } = novoBanco()
+    const id = banco.criarJob([p])
+    banco.atualizarStatusJob(id, 'rodando')
+    expect(banco.cancelarJob(id)).toBe(true)
+    expect(banco.resumoJob(id).ativo).toBe(false)
+    expect(banco.cancelarJob(id)).toBe(false)
+    limpar()
+  })
+
+  it('cancelarJob retorna false para job inexistente', () => {
+    const { banco, limpar } = novoBanco()
+    expect(banco.cancelarJob(999)).toBe(false)
+    limpar()
+  })
 })

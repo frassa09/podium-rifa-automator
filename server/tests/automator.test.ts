@@ -71,7 +71,7 @@ describe('Automator', () => {
     expect(submetidas[0]?.cpf).toBe('86730169087')
   })
 
-  it('para quando deveParar retorna true', async () => {
+  it('para quando deveParar retorna true e deixa linha pendente', async () => {
     const deps = {
       getSessao: async () => ({}) as never,
       submeterLinha: async () => {},
@@ -82,8 +82,8 @@ describe('Automator', () => {
     const a = new Automator(deps)
     const progress: LinhaJob[] = []
     await a.start([linha(1), linha(2)], l => progress.push(l))
-    expect([...ultimosStatus(progress).values()]).toEqual(['erro'])
-    expect(progress[progress.length - 1]?.erro).toMatch(/cancelado/i)
+    expect([...ultimosStatus(progress).values()]).toEqual(['pendente'])
+    expect(progress[progress.length - 1]?.erro).toBeNull()
   })
 
   it('emite cadastrando antes do estado final', async () => {
@@ -98,5 +98,36 @@ describe('Automator', () => {
     await a.start([linha(1)], l => statuses.push(l.status))
     expect(statuses).toContain('cadastrando')
     expect(statuses[statuses.length - 1]).toBe('ok')
+  })
+
+  it('cancelamento durante submissão deixa linha pendente (não re-submete)', async () => {
+    let chamadas = 0
+    let parar = false
+    const deps = {
+      getSessao: async () => ({}) as never,
+      submeterLinha: async () => { chamadas++; if (chamadas === 1) parar = true },
+      lerMaiorNumero: async () => 1000,
+      log: () => {},
+      deveParar: () => parar,
+    }
+    const a = new Automator(deps)
+    const progress: LinhaJob[] = []
+    await a.start([linha(1, 2)], l => progress.push(l))
+    expect(chamadas).toBe(1)
+    expect(progress[0]?.status).toBe('pendente')
+  })
+
+  it('retomada não duplica linhas já ok', async () => {
+    const sub = new Set<number>()
+    const deps = {
+      getSessao: async () => ({}) as never,
+      submeterLinha: async () => sub.add(1),
+      lerMaiorNumero: async () => 0,
+      log: () => {},
+    }
+    const a = new Automator(deps)
+    const linhas = [linha(1, 1, 'ok')]
+    await a.start(linhas, () => {})
+    expect(sub.size).toBe(0)
   })
 })

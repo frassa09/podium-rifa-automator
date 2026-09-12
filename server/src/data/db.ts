@@ -164,6 +164,18 @@ export class Banco {
     }
   }
 
+  cancelarJob(jobId: number): boolean {
+    const db = this.novaConexao()
+    try {
+      const info = db
+        .prepare("UPDATE jobs SET status = 'pendente' WHERE id = ? AND status = 'rodando'")
+        .run(jobId)
+      return info.changes > 0
+    } finally {
+      db.close()
+    }
+  }
+
   reprocessarErros(jobId: number): void {
     const db = this.novaConexao()
     try {
