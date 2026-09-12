@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#000000" />
+  <title>Rifa Automator</title>
+  <link rel="stylesheet" href="/style.css" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="icon" href="data:," />
+</head>
+<body>
+  <header class="app-header">
+    <h1>Rifa Automator</h1>
+    <nav class="tabs">
+      <button class="tab" data-tela="config" aria-selected="true">Login</button>
+      <button class="tab" data-tela="importar" aria-selected="false">Importar</button>
+      <button class="tab" data-tela="progresso" aria-selected="false">Progresso</button>
+    </nav>
+  </header>
+
+  <main>
+    <section id="tela-config" class="tela">
+      <form id="form-config" autocomplete="off">
+        <label>CPF da conta
+          <input id="cfg-cpf" name="cpf" inputmode="numeric" placeholder="000.000.000-00" required />
+        </label>
+        <label>Senha
+          <input id="cfg-senha" name="senha" type="password" autocomplete="new-password" required />
+        </label>
+        <button type="submit" class="btn btn-primary">Salvar e testar login</button>
+        <div id="cfg-status" class="status" role="status"></div>
+      </form>
+    </section>
+
+    <section id="tela-importar" class="tela" hidden>
+      <div class="card">
+        <h2>1. Escolha um arquivo</h2>
+        <input id="arq" type="file" accept=".csv,.xlsx,.xls" />
+        <p class="dica">Formato: Nome;CPF;Telefone;E-mail;Qtd (CSV) ou .xlsx</p>
+      </div>
+      <div class="card">
+        <h2>2. …ou cole a tabela</h2>
+        <textarea id="colar" rows="6" placeholder="Nome;CPF;Telefone;E-mail;Qtd
+Maria;867.301.690-87;(11) 98765-4321;maria@x.com;1"></textarea>
+      </div>
+      <button id="btn-importar" class="btn btn-primary">Importar</button>
+      <div id="import-status" class="status" role="status"></div>
+      <div id="avisos" class="avisos" hidden></div>
+    </section>
+
+    <section id="tela-progresso" class="tela" hidden>
+      <div class="resumo" id="resumo">
+        <div>Total: <b id="r-total">0</b></div>
+        <div class="ok">OK: <b id="r-ok">0</b></div>
+        <div class="erro">Erros: <b id="r-erro">0</b></div>
+        <div>Pendentes: <b id="r-pend">0</b></div>
+      </div>
+      <div class="botoes-job">
+        <button id="btn-iniciar" class="btn btn-primary">Iniciar</button>
+        <button id="btn-cancelar" class="btn">Cancelar</button>
+        <button id="btn-reproc" class="btn">Reprocessar erros</button>
+      </div>
+      <div id="job-header" class="card"></div>
+      <ul id="linhas" class="linhas"></ul>
+      <div id="logs" class="logs" hidden></div>
+    </section>
+  </main>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
