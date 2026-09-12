@@ -1,4 +1,4 @@
-import type { LinhaJob, Pessoa, ResumoProgresso, StatusLinha } from '../types.ts'
+import type { LinhaJob, Pessoa } from '../types.ts'
 
 export interface AutomatorDeps {
   getSessao: () => Promise<unknown>
@@ -28,6 +28,7 @@ export class Automator {
         break
       }
       linha.status = 'cadastrando'
+      onProgress(linha)
       let ok = false
       let ultimoErro = ''
       const n0 = await lerMaiorNumero(sessao).catch(() => 0)

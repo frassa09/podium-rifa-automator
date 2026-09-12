@@ -7,6 +7,12 @@ const linha = (id: number, qtd = 1, status: LinhaJob['status'] = 'pendente'): Li
   telefone: '11987654321', email: 'm@x.com', qtd, status, erro: null, numeros: '',
 })
 
+function ultimosStatus(progress: LinhaJob[]): Map<number, string> {
+  const m = new Map<number, string>()
+  for (const l of progress) m.set(l.id, l.status)
+  return m
+}
+
 describe('Automator', () => {
   it('processa todas as linhas na ordem', async () => {
     const submetidas: Pessoa[] = []
@@ -21,7 +27,7 @@ describe('Automator', () => {
     const progress: LinhaJob[] = []
     await a.start(linhas, l => progress.push(l))
     expect(submetidas).toHaveLength(3)
-    expect(progress.filter(l => l.status === 'ok')).toHaveLength(3)
+    expect([...ultimosStatus(progress).values()]).toEqual(['ok', 'ok', 'ok'])
   })
 
   it('replica submissões quando qtd > 1', async () => {
@@ -47,8 +53,8 @@ describe('Automator', () => {
     const a = new Automator(deps)
     const progress: LinhaJob[] = []
     await a.start([linha(1)], l => progress.push(l))
-    expect(progress[0]?.status).toBe('erro')
-    expect(progress[0]?.erro).toBeTruthy()
+    expect([...ultimosStatus(progress).values()]).toEqual(['erro'])
+    expect(progress[progress.length - 1]?.erro).toBeTruthy()
   })
 
   it('não reprocessa linha já ok (resume)', async () => {
@@ -76,8 +82,21 @@ describe('Automator', () => {
     const a = new Automator(deps)
     const progress: LinhaJob[] = []
     await a.start([linha(1), linha(2)], l => progress.push(l))
-    expect(progress).toHaveLength(1)
-    expect(progress[0]?.status).toBe('erro')
-    expect(progress[0]?.erro).toMatch(/cancelado/i)
+    expect([...ultimosStatus(progress).values()]).toEqual(['erro'])
+    expect(progress[progress.length - 1]?.erro).toMatch(/cancelado/i)
+  })
+
+  it('emite cadastrando antes do estado final', async () => {
+    const deps = {
+      getSessao: async () => ({}) as never,
+      submeterLinha: async () => {},
+      lerMaiorNumero: async () => 0,
+      log: () => {},
+    }
+    const a = new Automator(deps)
+    const statuses: string[] = []
+    await a.start([linha(1)], l => statuses.push(l.status))
+    expect(statuses).toContain('cadastrando')
+    expect(statuses[statuses.length - 1]).toBe('ok')
   })
 })
