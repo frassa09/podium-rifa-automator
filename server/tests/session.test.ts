@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeAll, afterAll } from 'vitest'
 import { createServer } from 'node:http'
 import type { Server } from 'node:http'
-import { PodiumSession, ErroLogin } from '../src/podium/session.ts'
+import { PodiumSession, ErroLogin, parseNumeroMaximo } from '../src/podium/session.ts'
 import type { Pessoa } from '../src/types.ts'
 
 // Mock server que replica o comportamento do site (nenhum TLS).
@@ -86,5 +86,37 @@ describe('PodiumSession em sessão', () => {
     expect(capturedRegistrar).toContain('campos%5Bcpf%5D=867.301.690-87')
     expect(await s.lerMaiorNumero()).toBe(1104)
     expect(await s.checarSessao()).toBe(true)
+  })
+})
+
+describe('parseNumeroMaximo', () => {
+  const paginaOk =
+    '<html><form action="/registrar_rifa.php"><table><tr><th>Nº</th><th>Nome</th></tr>' +
+    '<tr><td>0001104</td><td>a</td></tr><tr><td>1234567</td><td>b</td></tr></table></form></html>'
+
+  it('lê o maior número da coluna Nº', () => {
+    expect(parseNumeroMaximo(paginaOk)).toBe(1234567)
+  })
+
+  it('ignora números de 7 dígitos fora da coluna Nº (telefone/id/data)', () => {
+    const html =
+      '<h1>celular 99988771</h1><form action="/registrar_rifa.php"><table>' +
+      '<tr><th>Nº</th><th>Telefone</th><th>Id</th></tr>' +
+      '<tr><td>0001104</td><td>11987654321</td><td>8888777</td></tr></table></form>'
+    expect(parseNumeroMaximo(html)).toBe(1104)
+  })
+
+  it('retorna 0 para tabela vazia (conta nova)', () => {
+    expect(parseNumeroMaximo('<form action="/registrar_rifa.php"><table><tr><th>Nº</th></tr></table></form>')).toBe(0)
+  })
+
+  it('lança erro quando a página não é o formulário autenticado', () => {
+    expect(() => parseNumeroMaximo('<html>login page</html>')).toThrow(/formulário autenticado/)
+  })
+
+  it('aceita variações de cabeçalho (N°, Numero da rifa)', () => {
+    const html =
+      '<form action="/registrar_rifa.php"><table><tr><th>Numero da rifa</th></tr><tr><td>0000055</td></tr></table></form>'
+    expect(parseNumeroMaximo(html)).toBe(55)
   })
 })

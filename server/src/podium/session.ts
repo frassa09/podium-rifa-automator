@@ -10,6 +10,40 @@ const dispatcher = new Agent({ connect: { rejectUnauthorized: false } })
 
 const TIMEOUT = 30000
 
+const ROTULOS_NUMERO = new Set(['n', 'no', 'num', 'numeros', 'nro', 'numero', 'numero da rifa', 'num da rifa', 'rifa'])
+
+export function parseNumeroMaximo(html: string): number {
+  if (!/<form[^>]*action=["']?[^"'>]*registrar_rifa\.php/i.test(html)) {
+    throw new Error('Página não é o formulário autenticado de rifas (sessão expirada?)')
+  }
+  const tabelas = html.match(/<table[\s\S]*?<\/table>/gi) ?? []
+  let maior = 0
+  for (const tabela of tabelas) {
+    const linhas = tabela.match(/<tr[\s\S]*?<\/tr>/gi) ?? []
+    for (let li = 0; li < linhas.length; li++) {
+      const celulas = [...(linhas[li]!.matchAll(/<t(?:h|d)[\s\S]*?<\/t(?:h|d)>/gi))].map(m => m[0]!)
+      for (let ci = 0; ci < celulas.length; ci++) {
+        const rotulo = celulas[ci]!
+          .replace(/<[^>]*>/g, '')
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .toLowerCase()
+          .replace(/[º°]/g, '')
+          .trim()
+        if (!ROTULOS_NUMERO.has(rotulo)) continue
+        for (let r = li + 1; r < linhas.length; r++) {
+          const celulasCorpo = [...(linhas[r]!.matchAll(/<t(?:h|d)[\s\S]*?<\/t(?:h|d)>/gi))].map(m => m[0]!)
+          const celula = celulasCorpo[ci]
+          if (!celula) continue
+          const num = /(\d+)/.exec(celula.replace(/<[^>]*>/g, '').trim())
+          if (num) maior = Math.max(maior, Number(num[0]))
+        }
+      }
+    }
+  }
+  return maior
+}
+
 export class ErroLogin extends Error {
   motivo: 'cpf' | 'credencial' | 'rede'
   constructor(motivo: ErroLogin['motivo'], msg: string) {
@@ -127,10 +161,7 @@ export class PodiumSession {
   async lerMaiorNumero(): Promise<number> {
     const res = await this.req('/main.php?conteudo=form_rifa')
     const html = await res.text()
-    const nums = [...html.matchAll(/\b\d{7}\b/g)].map(m => Number(m[0]))
-    const maior = nums.length ? Math.max(...nums) : 0
-    // Fallback: se não achou o padrão da tabela, devolve 0 (cuidado: pode ser válido para conta nova)
-    return maior
+    return parseNumeroMaximo(html)
   }
 
   async checarSessao(): Promise<boolean> {
