@@ -32,7 +32,15 @@ export class Automator {
 
       let sessao = await this.deps.getSessao()
       if (linha.base === null) {
-        const n0 = await lerMaiorNumero(sessao).catch(() => 0)
+        let n0: number
+        try {
+          n0 = await lerMaiorNumero(sessao)
+        } catch (e) {
+          linha.status = 'erro'
+          linha.erro = `não foi possível medir o Nº inicial: ${(e as Error).message}`
+          onProgress(linha)
+          throw new Error(`Abortando job: ${linha.erro}`)
+        }
         linha.base = n0
         onProgress(linha)
       }

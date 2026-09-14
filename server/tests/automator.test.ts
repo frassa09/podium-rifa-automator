@@ -244,4 +244,25 @@ describe('Automator', () => {
     expect(l.status).toBe('ok')
     expect(l.enviadas).toBe(2)
   })
+
+  it('falha inicial de medição do Nº aborta a linha sem gravar base 0 (nunca falso-ok)', async () => {
+    let submeteu = false
+    const deps: AutomatorDeps = {
+      getSessao: async () => ({}) as never,
+      submeterLinha: async () => {
+        submeteu = true
+      },
+      lerMaiorNumero: async () => {
+        throw new Error('site indisponível')
+      },
+      log: () => {},
+    }
+    const a = new Automator(deps)
+    const l = linha(1)
+    await expect(a.start([l])).rejects.toThrow(/Abortando job/)
+    expect(l.status).toBe('erro')
+    expect(l.base).toBeNull()
+    expect(l.erro).toContain('não foi possível medir o Nº inicial')
+    expect(submeteu).toBe(false)
+  })
 })
