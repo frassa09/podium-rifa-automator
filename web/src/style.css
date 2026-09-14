@@ -141,3 +141,4 @@ input, textarea {
   overflow: auto;
   white-space: pre-wrap;
 }
+.linhas.historico li { grid-template-columns: auto 1fr auto auto; }

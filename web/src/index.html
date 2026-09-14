@@ -17,13 +17,29 @@
       <button class="tab" data-tela="manual" aria-selected="false">Manual</button>
       <button class="tab" data-tela="importar" aria-selected="false">Importar</button>
       <button class="tab" data-tela="progresso" aria-selected="false">Progresso</button>
+      <button class="tab" data-tela="historico" aria-selected="false">Histórico</button>
     </nav>
   </header>
 
   <div id="login-badge" class="login-badge" hidden></div>
 
   <main>
+    <section id="tela-pin" class="tela" hidden>
+      <div class="card">
+        <h2>Acesso protegido por PIN</h2>
+        <label>PIN
+          <input id="pin" name="pin" type="password" inputmode="numeric" autocomplete="new-password" />
+        </label>
+        <button id="btn-pin" class="btn btn-primary">Entrar</button>
+        <div id="pin-status" class="status" role="status"></div>
+      </div>
+    </section>
+
     <section id="tela-config" class="tela">
+      <div id="env-aviso" class="avisos" hidden>
+        <strong>Conta configurada via ambiente</strong>
+        <p class="dica" id="env-limite"></p>
+      </div>
       <form id="form-config" autocomplete="off">
         <label>CPF da conta
           <input id="cfg-cpf" name="cpf" inputmode="numeric" placeholder="000.000.000-00" required />
@@ -52,7 +68,7 @@
           <input id="m-email" name="email" type="email" inputmode="email" required />
         </label>
         <label>Rifas (qtd)
-          <input id="m-qtd" name="qtd" type="number" inputmode="numeric" min="1" step="1" value="1" required />
+          <input id="m-qtd" name="qtd" type="number" inputmode="numeric" min="1" max="100" step="1" value="1" required />
         </label>
         <div class="botoes-job">
           <button type="submit" class="btn btn-primary">Adicionar</button>
@@ -99,6 +115,13 @@ Maria;867.301.690-87;(11) 98765-4321;maria@x.com;1"></textarea>
       <div id="job-header" class="card"></div>
       <ul id="linhas" class="linhas"></ul>
       <div id="logs" class="logs" hidden></div>
+    </section>
+
+    <section id="tela-historico" class="tela" hidden>
+      <div class="card">
+        <h2>Histórico de jobs</h2>
+        <ul id="historico-lista" class="linhas historico"></ul>
+      </div>
     </section>
   </main>
 

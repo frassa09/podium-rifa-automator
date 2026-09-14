@@ -1,6 +1,7 @@
 const $ = sel => document.querySelector(sel)
 
 const state = { jobId: null, timer: null, linhas: [] }
+let pin = sessionStorage.getItem('pin') || ''
 
 function trocarTela(nome) {
   document.querySelectorAll('.tela').forEach(t => (t.hidden = true))
@@ -9,6 +10,7 @@ function trocarTela(nome) {
     t.setAttribute('aria-selected', t.dataset.tela === nome ? 'true' : 'false')
   })
   if (nome === 'progresso') refreshJob()
+  if (nome === 'historico') refreshHistorico()
 }
 
 document.querySelectorAll('.tab').forEach(t =>
@@ -17,9 +19,16 @@ document.querySelectorAll('.tab').forEach(t =>
 
 async function api(path, opts = {}) {
   const r = await fetch(path, {
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(pin ? { 'X-PIN': pin } : {}),
+    },
     ...opts,
   })
+  if (r.status === 401) {
+    trocarTela('pin')
+    throw new Error('PIN necessário')
+  }
   if (!r.ok) throw new Error(await r.text())
   return r.json()
 }
@@ -31,18 +40,59 @@ async function refreshLoginBadge() {
     b.hidden = false
     if (c.configurado) {
       b.className = 'login-badge ok'
-      b.textContent = c.turma
-        ? `Conta ativa: ${maskCPF(c.cpf)} · Turma ${c.turma}`
-        : `Conta ativa: ${maskCPF(c.cpf)}`
+      b.textContent = c.viaAmbiente
+        ? `Conta via ambiente: ${maskCPF(c.cpf)}${c.turma ? ` · Turma ${c.turma}` : ''}`
+        : c.turma
+          ? `Conta ativa: ${maskCPF(c.cpf)} · Turma ${c.turma}`
+          : `Conta ativa: ${maskCPF(c.cpf)}`
     } else {
       b.className = 'login-badge nao'
-      b.textContent = 'Nenhuma conta configurada — use a aba Login'
+      b.textContent = `Nenhuma conta configurada — use a aba Login (limite ${c.maxQuantidade ?? 100}/pessoa)`
     }
   } catch {
     b.hidden = true
   }
 }
-refreshLoginBadge()
+
+async function initBoot() {
+  try {
+    const c = await api('/api/config')
+    $('#m-qtd').max = c.maxQuantidade ?? 100
+    if (c.viaAmbiente) {
+      $('#env-aviso').hidden = false
+      $('#form-config').hidden = true
+      $('#env-limite').textContent = `Limite por pessoa: ${c.maxQuantidade ?? 100} rifas.`
+    } else {
+      $('#env-aviso').hidden = true
+      $('#form-config').hidden = false
+    }
+  } catch {}
+  refreshLoginBadge()
+}
+initBoot()
+
+// (————————) PIN ———————
+$('#btn-pin').addEventListener('click', async () => {
+  const st = $('#pin-status')
+  const valor = $('#pin').value.trim()
+  if (!valor) {
+    st.className = 'status'
+    st.textContent = 'Digite o PIN.'
+    return
+  }
+  const r = await fetch('/api/config', { headers: { 'X-PIN': valor } })
+  if (r.ok) {
+    pin = valor
+    sessionStorage.setItem('pin', valor)
+    $('#pin').value = ''
+    $('#pin-status').textContent = ''
+    trocarTela('manual')
+    refreshLoginBadge()
+  } else {
+    st.className = 'status erro'
+    st.textContent = 'PIN inválido.'
+  }
+})
 
 // ————— Configuração —————
 $('#form-config').addEventListener('submit', async e => {
@@ -174,6 +224,8 @@ $('#btn-limpar').addEventListener('click', () => {
 $('#btn-criar').addEventListener('click', async () => {
   const st = $('#m-criar-status')
   const btn = $('#btn-criar')
+  const total = manual.reduce((s, p) => s + p.qtd, 0)
+  if (!confirm(`Serão criadas ${total} rifa(s) para ${manual.length} pessoa(s). Confirmar?`)) return
   st.className = 'status'
   st.textContent = 'Criando…'
   btn.disabled = true
@@ -200,7 +252,7 @@ $('#btn-criar').addEventListener('click', async () => {
 $('#btn-importar').addEventListener('click', async () => {
   const st = $('#import-status')
   st.className = 'status'
-  st.textContent = 'Enviando…'
+  st.textContent = 'Validando…'
   const avisos = $('#avisos')
   avisos.hidden = true
   const arq = $('#arq').files[0]
@@ -213,6 +265,13 @@ $('#btn-importar').addEventListener('click', async () => {
     body = { texto: $('#colar').value }
   }
   try {
+    const prev = await api('/api/jobs', { method: 'POST', body: JSON.stringify({ ...body, semCriar: true }) })
+    if (!prev.preview) throw new Error('resposta inesperada')
+    if (!confirm(`Serão criadas ${prev.totalRifas} rifa(s) de ${prev.linhas} pessoa(s). Confirmar importação?`)) {
+      st.textContent = ''
+      return
+    }
+    st.textContent = 'Criando…'
     const r = await api('/api/jobs', { method: 'POST', body: JSON.stringify(body) })
     state.jobId = r.jobId
     st.className = 'status ok'
@@ -288,7 +347,11 @@ async function refreshJob() {
 
 $('#btn-iniciar').addEventListener('click', async () => {
   if (!state.jobId) return
-  $('#' + 'btn-iniciar').disabled = true
+  const pendentes = state.linhas
+    .filter(l => l.status !== 'ok')
+    .reduce((s, l) => s + Math.max(0, l.qtd - l.enviadas), 0)
+  if (!confirm(`Faltam criar ${pendentes} rifa(s). Confirmar início?`)) return
+  $('#btn-iniciar').disabled = true
   await api(`/api/jobs/${state.jobId}/iniciar`, { method: 'POST' })
   setTimeout(refreshJob, 300)
 })
@@ -304,6 +367,38 @@ $('#btn-reproc').addEventListener('click', async () => {
   await api(`/api/jobs/${state.jobId}/reprocessar-erros`, { method: 'POST' })
   await refreshJob()
 })
+
+// ————— Histórico —————
+async function refreshHistorico() {
+  const ul = $('#historico-lista')
+  ul.textContent = ''
+  try {
+    const jobs = await api('/api/jobs')
+    for (const j of jobs) {
+      const li = document.createElement('li')
+      const dot = document.createElement('span')
+      dot.className = `st ${j.status === 'rodando' ? 'cadastrando' : j.status}`
+      const info = document.createElement('span')
+      info.textContent = `#${j.id} — ${j.status} — ${j.ok} ok / ${j.erro} erro (${j.total} linhas) · ${j.criado_em}`
+      const abrir = document.createElement('button')
+      abrir.className = 'btn btn-mini'
+      abrir.textContent = 'Abrir'
+      abrir.addEventListener('click', () => {
+        state.jobId = j.id
+        trocarTela('progresso')
+      })
+      const reproc = document.createElement('button')
+      reproc.className = 'btn btn-mini'
+      reproc.textContent = 'Reprocessar erros'
+      reproc.addEventListener('click', async () => {
+        await api(`/api/jobs/${j.id}/reprocessar-erros`, { method: 'POST' })
+        await refreshHistorico()
+      })
+      li.append(dot, info, abrir, reproc)
+      ul.appendChild(li)
+    }
+  } catch {}
+}
 
 // Polling 1,5s enquanto na tela progresso
 setInterval(() => {
