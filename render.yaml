@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: podium-rifa-automator
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start
+    healthCheckPath: /api/health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: RIFA_PIN
+        sync: false
+      - key: RIFA_CPF
+        sync: false
+      - key: RIFA_SENHA
+        sync: false
+      - key: RIFA_TURMA
+        sync: false
+      - key: MAX_QUANTIDADE
+        value: 100
