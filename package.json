@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "engines": { "node": ">=20.18.1" },
+  "engines": { "node": ">=20.18.1 <23" },
   "scripts": {
     "dev": "npm run dev --workspace server",
     "build": "npm run build --workspace server",
