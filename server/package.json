@@ -10,7 +10,8 @@
     "test": "vitest run",
     "test:e2e": "tsx tests/e2e.seco.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "eslint src tests"
+    "lint": "eslint src tests",
+    "capturar:form-rifa": "tsx scripts/capturarFormRifa.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.3.0",

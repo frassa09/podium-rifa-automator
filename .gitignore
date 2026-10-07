@@ -2,6 +2,8 @@ node_modules/
 dist/
 /data/
 server/data/
+# capturas reais do site (dados pessoais) — spec 2026-10-07 §0
+server/capturas/
 *.log
 .env
 *.crt
