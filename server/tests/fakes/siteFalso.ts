@@ -17,6 +17,8 @@ export interface OpcoesSiteFalso {
   outrosVendedoresPorEnvio?: number
   // Só para teste de controle: o site real usa ISO-8859-1.
   codificacao?: 'latin1' | 'utf8'
+  // Demora do site para responder ao registro (a rifa já foi criada).
+  atrasoPostMs?: number
 }
 
 export interface PostRegistrar {
@@ -88,7 +90,7 @@ export async function iniciarSiteFalso(opts: OpcoesSiteFalso): Promise<SiteFalso
         )
         proximo += 1 + (opts.outrosVendedoresPorEnvio ?? 0)
         // §0.5: resposta do registro NÃO verificada no site real; assumido o padrão do login.
-        res.writeHead(302, { Location: 'main.php?conteudo=form_rifa' }).end()
+        setTimeout(() => res.writeHead(302, { Location: 'main.php?conteudo=form_rifa' }).end(), opts.atrasoPostMs ?? 0)
         return
       }
       res.writeHead(404).end()

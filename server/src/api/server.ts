@@ -8,14 +8,21 @@ import { PodiumSession } from '../podium/session.ts'
 import { pinValido } from '../utils/pin.ts'
 import { parseLinhas, validarPessoa, type LinhaParseada } from '../utils/tableParser.ts'
 import { apenasDigitos } from '../utils/cpf.ts'
-import type { Config, Pessoa } from '../types.ts'
+import type { Config, Pessoa, StatusJob } from '../types.ts'
+import { LEASE_MS } from '../data/banco.ts'
+import { hostname } from 'node:os'
+import { randomUUID } from 'node:crypto'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const WEB_DIR = join(__dirname, '..', '..', '..', 'web', 'src')
 
 interface Runner {
   parar: () => void
+  terminou: Promise<void>
 }
+
+// Para de enviar quando faltar menos que isto para o lease vencer sem renovação.
+const MARGEM_LEASE_MS = 20_000
 
 function base64ToArrayBuffer(b64: string): ArrayBuffer {
   const bin = Buffer.from(b64, 'base64')
@@ -41,22 +48,29 @@ export interface StartOpts {
   envConfig?: Config | null
   maxQuantidade?: number
   login?: (cpf: string, senha: string) => Promise<PodiumSession>
+  // Identidade desta instância no lock de execução (padrão: host:pid:aleatório).
+  instancia?: string
+  renovacaoMs?: number
 }
 
 export async function startServer(opts: StartOpts = {}): Promise<{
   app: express.Express
   server: Server
   banco: Banco
+  pararTodos: () => void
+  aguardarRunners: (limiteMs: number) => Promise<boolean>
 }> {
   const banco = opts.db ?? (await abrirBanco())
   const envConfig = opts.envConfig !== undefined ? opts.envConfig : lerEnvConfig()
   const maxQuantidade = opts.maxQuantidade ?? lerMaxQuantidade()
   const pin = opts.pin ?? process.env.RIFA_PIN ?? ''
   const login = opts.login ?? PodiumSession.login
+  const instancia = opts.instancia ?? `${hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`
+  const renovacaoMs = opts.renovacaoMs ?? 15_000
+  let encerrando = false
 
-  // Após crash/restart/redeploy, nenhum job pode ficar eternamente 'rodando'.
-  // Retomada re-mede o site e cria apenas o que falta.
-  await banco.reconciliarBoot()
+  // Não libera lock válido de outra instância (deploy sobrepondo); só os expirados.
+  await banco.reconciliarExpirados()
 
   const app = express()
   app.use(express.json({ limit: '50mb' }))
@@ -210,18 +224,43 @@ export async function startServer(opts: StartOpts = {}): Promise<{
     })
   })
 
+  // O runner só envia enquanto tem lock válido. Para antes do próximo POST se: cancelaram
+  // (aqui ou em outra instância), a renovação falhou, ou o lease está perto de vencer.
   async function rodarJob(jobId: number): Promise<void> {
-    const config = await configAtual()
-    if (!config) return
-    let sessao: PodiumSession | null = null
-    let deveParar = false
-    const parar = () => {
-      deveParar = true
+    let pararLocal = false
+    let perdeuLock = false
+    let leaseAte = Date.now() + LEASE_MS
+    let fim: () => void = () => {}
+    const terminou = new Promise<void>(r => { fim = r })
+    runners.set(jobId, { parar: () => { pararLocal = true }, terminou })
+    const deveParar = () => pararLocal || perdeuLock || Date.now() > leaseAte - MARGEM_LEASE_MS
+    const log = (msg: string, nivel: 'info' | 'warn' | 'error' = 'info') => {
+      banco.registrarLog(msg, nivel, jobId).catch(e => console.error('[rifa] falha ao gravar log:', e))
     }
-    runners.set(jobId, { parar })
 
+    const renovar = async () => {
+      const antes = Date.now()
+      try {
+        const r = await banco.renovarLock(jobId, instancia, antes)
+        if (!r.ok) {
+          perdeuLock = true
+          log('Lock de execução perdido; parando antes do próximo envio', 'error')
+          return
+        }
+        leaseAte = antes + LEASE_MS
+        if (r.cancelar) pararLocal = true
+      } catch (e) {
+        log(`Falha ao renovar o lock (${(e as Error).message}); o job para se não renovar a tempo`, 'warn')
+      }
+    }
+    const batimento = setInterval(() => void renovar(), renovacaoMs)
+    batimento.unref()
+
+    let statusFinal: StatusJob = 'pendente'
     try {
-      sessao = await login(config.cpf, config.senha)
+      const config = await configAtual()
+      if (!config) throw new Error('login não configurado')
+      let sessao = await login(config.cpf, config.senha)
       const automator = new Automator({
         getSessao: async () => sessao,
         // Um POST por chamada; nunca repetir aqui. Se a sessão caiu, renova para a próxima medição.
@@ -244,18 +283,20 @@ export async function startServer(opts: StartOpts = {}): Promise<{
           }
         },
         salvarLinha: l => banco.atualizarLinha(l),
-        log: (msg, nivel) => {
-          banco.registrarLog(msg, nivel ?? 'info', jobId).catch(e => console.error('falha ao gravar log:', e))
-        },
-        deveParar: () => deveParar,
+        log,
+        deveParar,
       })
       await automator.start(await banco.linhasDoJob(jobId))
-      await banco.atualizarStatusJob(jobId, deveParar ? 'pendente' : 'concluido')
+      statusFinal = deveParar() ? 'pendente' : 'concluido'
+      if (pararLocal) log('Job parado a pedido', 'warn')
     } catch (e) {
-      await banco.registrarLog(`Erro ao rodar job #${jobId}: ${(e as Error).message}`, 'error', jobId)
-      await banco.atualizarStatusJob(jobId, 'pendente')
+      await banco.registrarLog(`Erro ao rodar job #${jobId}: ${(e as Error).message}`, 'error', jobId).catch(() => undefined)
     } finally {
+      clearInterval(batimento)
+      // liberarLock só age se o lock ainda é desta instância.
+      await banco.liberarLock(jobId, instancia, statusFinal).catch(e => console.error('[rifa] falha ao liberar lock:', e))
       runners.delete(jobId)
+      fim()
     }
   }
 
@@ -264,6 +305,10 @@ export async function startServer(opts: StartOpts = {}): Promise<{
     const config = await configAtual()
     if (!config) {
       res.status(400).json({ ok: false, erro: 'Configure o login primeiro' })
+      return
+    }
+    if (encerrando) {
+      res.status(503).json({ ok: false, erro: 'Servidor reiniciando; tente de novo em instantes' })
       return
     }
     if (runners.has(id)) {
@@ -275,9 +320,9 @@ export async function startServer(opts: StartOpts = {}): Promise<{
       res.status(404).json({ ok: false, erro: 'Job não encontrado' })
       return
     }
-    const assumiu = await banco.tentarIniciarJob(id)
+    const assumiu = await banco.tentarIniciarJob(id, instancia)
     if (!assumiu) {
-      res.status(409).json({ ok: false, erro: 'Já existe um job rodando' })
+      res.status(409).json({ ok: false, erro: 'Já existe um job rodando (nesta ou em outra instância)' })
       return
     }
     await banco.registrarLog(`Iniciando job #${id}`, 'info', id)
@@ -285,12 +330,13 @@ export async function startServer(opts: StartOpts = {}): Promise<{
     res.json({ ok: true })
   })
 
+  // Só sinaliza. O status muda quando o runner realmente sai (nunca no meio de um POST).
   app.post('/api/jobs/:id/cancelar', async (req, res) => {
     const id = Number(req.params.id)
     runners.get(id)?.parar()
-    await banco.cancelarJob(id)
-    await banco.registrarLog('Cancelamento solicitado', 'warn', id)
-    res.json({ ok: true })
+    const sinalizado = await banco.cancelarJob(id)
+    await banco.registrarLog('Cancelamento solicitado; o job para antes do próximo envio', 'warn', id)
+    res.json({ ok: true, sinalizado })
   })
 
   app.post('/api/jobs/:id/reprocessar-erros', async (req, res) => {
@@ -302,5 +348,16 @@ export async function startServer(opts: StartOpts = {}): Promise<{
 
   const server = createServer(app)
   await new Promise<void>(r => server.listen(opts.port ?? 3000, r))
-  return { app, server, banco }
+
+  // Desligamento (SIGTERM do Render, unhandledRejection): nenhum POST novo depois disso.
+  const pararTodos = () => {
+    encerrando = true
+    for (const r of runners.values()) r.parar()
+  }
+  const aguardarRunners = async (limiteMs: number): Promise<boolean> => {
+    const todos = Promise.all([...runners.values()].map(r => r.terminou)).then(() => true)
+    const limite = new Promise<boolean>(r => setTimeout(() => r(false), limiteMs).unref())
+    return Promise.race([todos, limite])
+  }
+  return { app, server, banco, pararTodos, aguardarRunners }
 }

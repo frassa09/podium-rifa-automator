@@ -12,7 +12,10 @@ const DDL =
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     status TEXT NOT NULL DEFAULT 'pendente',
     criado_em TEXT NOT NULL DEFAULT (datetime('now')),
-    total INTEGER NOT NULL DEFAULT 0
+    total INTEGER NOT NULL DEFAULT 0,
+    lock_owner TEXT,
+    lock_ate INTEGER,
+    cancelar INTEGER NOT NULL DEFAULT 0
   );
   CREATE TABLE IF NOT EXISTS job_linhas (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -103,6 +106,10 @@ export class SqliteBanco extends Banco {
     if (!cols.some(c => c.name === 'base_cpf')) db.exec('ALTER TABLE job_linhas ADD COLUMN base_cpf INTEGER')
     if (!cols.some(c => c.name === 'tentativas')) db.exec('ALTER TABLE job_linhas ADD COLUMN tentativas INTEGER NOT NULL DEFAULT 0')
     if (!cols.some(c => c.name === 'confirmadas')) db.exec('ALTER TABLE job_linhas ADD COLUMN confirmadas INTEGER NOT NULL DEFAULT 0')
+    const colsJobs = db.prepare('PRAGMA table_info(jobs)').all() as { name: string }[]
+    if (!colsJobs.some(c => c.name === 'lock_owner')) db.exec('ALTER TABLE jobs ADD COLUMN lock_owner TEXT')
+    if (!colsJobs.some(c => c.name === 'lock_ate')) db.exec('ALTER TABLE jobs ADD COLUMN lock_ate INTEGER')
+    if (!colsJobs.some(c => c.name === 'cancelar')) db.exec('ALTER TABLE jobs ADD COLUMN cancelar INTEGER NOT NULL DEFAULT 0')
     db.close()
   }
 

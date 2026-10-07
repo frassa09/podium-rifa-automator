@@ -17,8 +17,16 @@ export interface QueryExecutor {
   fechar(): Promise<void>
 }
 
+// Lock de execução com lease (spec 2026-10-07 §2.4). Tempos em epoch ms do relógio da aplicação.
+// Um job só roda com lock válido (lock_ate >= agora) e nunca há dois locks válidos ao mesmo tempo.
+export const LEASE_MS = 60_000
+
 export const CLAIM_JOB_SQL =
-  "UPDATE jobs SET status = 'rodando' WHERE id = ? AND status != 'rodando' AND NOT EXISTS (SELECT 1 FROM jobs WHERE status = 'rodando' AND id != ?)"
+  "UPDATE jobs SET status = 'rodando', lock_owner = ?, lock_ate = ?, cancelar = 0 " +
+  'WHERE id = ? AND (lock_ate IS NULL OR lock_ate < ?) ' +
+  'AND NOT EXISTS (SELECT 1 FROM jobs WHERE id != ? AND lock_ate IS NOT NULL AND lock_ate >= ?)'
+
+const MSG_INTERROMPIDO = 'processo interrompido com envio sem confirmação; confira no site antes de reenviar'
 
 // Serialeia claims concorrentes dentro da mesma transação (Postgres).
 const LOCK_JOB_GLOBAL_SQL = 'SELECT pg_advisory_xact_lock(893222001)'
@@ -52,6 +60,8 @@ export abstract class Banco {
   protected exigeBloqueioGlobal = false
 
   protected abstract executar<R>(fn: (e: QueryExecutor) => Promise<R>): Promise<R>
+
+  async fechar(): Promise<void> {}
 
   async lerConfig(): Promise<Config | null> {
     return this.executar(async e => {
@@ -131,21 +141,53 @@ export abstract class Banco {
     })
   }
 
-  // Claim atômico do job único. SQLite é seguro por conexão de escrita única;
+  // Claim atômico com lease. SQLite é seguro por conexão de escrita única;
   // Postgres serializa com advisory lock dentro da transação (exigeBloqueioGlobal).
-  async tentarIniciarJob(jobId: number): Promise<boolean> {
+  async tentarIniciarJob(jobId: number, dono: string, agora = Date.now()): Promise<boolean> {
     return this.executar(e =>
       e.transacao(async () => {
         if (this.exigeBloqueioGlobal) {
           await e.rows<unknown[]>(LOCK_JOB_GLOBAL_SQL)
         }
-        return (await e.changes(CLAIM_JOB_SQL, [jobId, jobId])) > 0
+        await this.reconciliarCom(e, agora)
+        return (await e.changes(CLAIM_JOB_SQL, [dono, agora + LEASE_MS, jobId, agora, jobId, agora])) > 0
       })
     )
   }
 
-  async cancelarJob(jobId: number): Promise<boolean> {
-    return this.executar(async e => (await e.changes("UPDATE jobs SET status = 'pendente' WHERE id = ? AND status = 'rodando'", [jobId])) > 0)
+  // Renova só se o lock ainda é deste dono e não expirou. Devolve se houve pedido de cancelamento.
+  async renovarLock(jobId: number, dono: string, agora = Date.now()): Promise<{ ok: boolean; cancelar: boolean }> {
+    return this.executar(async e => {
+      const ok = (await e.changes('UPDATE jobs SET lock_ate = ? WHERE id = ? AND lock_owner = ? AND lock_ate >= ?', [agora + LEASE_MS, jobId, dono, agora])) > 0
+      const r = await e.rows<{ cancelar: unknown }>('SELECT cancelar FROM jobs WHERE id = ?', [jobId])
+      return { ok, cancelar: num(r[0]?.cancelar) === 1 }
+    })
+  }
+
+  async liberarLock(jobId: number, dono: string, status: StatusJob): Promise<void> {
+    await this.executar(async e => {
+      await e.changes('UPDATE jobs SET status = ?, lock_owner = NULL, lock_ate = NULL, cancelar = 0 WHERE id = ? AND lock_owner = ?', [status, jobId, dono])
+    })
+  }
+
+  async lockValido(jobId: number, agora = Date.now()): Promise<boolean> {
+    return this.executar(async e => (await e.rows('SELECT 1 FROM jobs WHERE id = ? AND lock_ate IS NOT NULL AND lock_ate >= ?', [jobId, agora])).length > 0)
+  }
+
+  async algumLockValido(agora = Date.now()): Promise<boolean> {
+    return this.executar(async e => (await e.rows('SELECT 1 FROM jobs WHERE lock_ate IS NOT NULL AND lock_ate >= ?', [agora])).length > 0)
+  }
+
+  // Só sinaliza: o status muda quando o runner realmente sai (liberarLock).
+  async cancelarJob(jobId: number, agora = Date.now()): Promise<boolean> {
+    return this.executar(async e => (await e.changes('UPDATE jobs SET cancelar = 1 WHERE id = ? AND lock_ate IS NOT NULL AND lock_ate >= ?', [jobId, agora])) > 0)
+  }
+
+  async linhaPorId(id: number): Promise<LinhaJob | null> {
+    return this.executar(async e => {
+      const r = await e.rows<Record<string, unknown>>('SELECT * FROM job_linhas WHERE id = ?', [id])
+      return r[0] ? normalizarLinha(r[0]) : null
+    })
   }
 
   async reprocessarErros(jobId: number): Promise<void> {
@@ -196,10 +238,22 @@ export abstract class Banco {
     })
   }
 
-  async reconciliarBoot(): Promise<void> {
-    await this.executar(async e => {
-      await e.changes("UPDATE jobs SET status = 'pendente' WHERE status = 'rodando'")
-      await e.changes("UPDATE job_linhas SET status = 'pendente' WHERE status = 'cadastrando'")
-    })
+  // Locks expiram sozinhos; nada aqui mexe em job com lock válido (outra instância rodando).
+  // Linha cadastrando de lock expirado: incerto se há envio sem confirmação, senão pendente.
+  async reconciliarExpirados(agora = Date.now()): Promise<void> {
+    await this.executar(e => e.transacao(() => this.reconciliarCom(e, agora)))
+  }
+
+  private async reconciliarCom(e: QueryExecutor, agora: number): Promise<void> {
+    const semLock = 'SELECT id FROM jobs WHERE lock_ate IS NULL OR lock_ate < ?'
+    await e.changes(
+      `UPDATE job_linhas SET status = 'incerto', erro = ? WHERE status = 'cadastrando' AND tentativas > confirmadas AND job_id IN (${semLock})`,
+      [MSG_INTERROMPIDO, agora]
+    )
+    await e.changes(`UPDATE job_linhas SET status = 'pendente' WHERE status = 'cadastrando' AND job_id IN (${semLock})`, [agora])
+    await e.changes(
+      "UPDATE jobs SET status = 'pendente', lock_owner = NULL, lock_ate = NULL, cancelar = 0 WHERE status = 'rodando' AND (lock_ate IS NULL OR lock_ate < ?)",
+      [agora]
+    )
   }
 }

@@ -1,11 +1,13 @@
-import { describe, expect, it, beforeAll, afterAll } from 'vitest'
+import { describe, expect, it, beforeAll, afterAll, afterEach } from 'vitest'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AddressInfo } from 'node:net'
-import { startServer } from '../src/api/server.ts'
+import { startServer, type StartOpts } from '../src/api/server.ts'
+import { LEASE_MS } from '../src/data/banco.ts'
+import { PodiumSession } from '../src/podium/session.ts'
+import { iniciarSiteFalso, type SiteFalso } from './fakes/siteFalso.ts'
 import { SqliteBanco } from '../src/data/sqliteBanco.ts'
-import type { PodiumSession } from '../src/podium/session.ts'
 import type { Pessoa } from '../src/types.ts'
 
 const TEXTO = 'Nome;CPF;Telefone;E-mail;Qtd\nMaria;86730169087;11987654321;m@x.com;1'
@@ -25,6 +27,7 @@ let srv: ReturnType<typeof Object>
 let base: string
 let banco: SqliteBanco
 let dir: string
+let jobTravado: number
 
 beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), 'rifa-api-'))
@@ -187,16 +190,96 @@ describe('API', () => {
     expect(r1.status).toBe(200)
     const r2 = await fetch(`${base}/api/jobs/${id2}/iniciar`, { method: 'POST' })
     expect(r2.status).toBe(409)
-    await banco.cancelarJob(id1)
+    jobTravado = id1
   })
 
-  it('cancela job rodando e fica pendente', async () => {
+  it('cancelar só sinaliza: o job segue rodando até o runner sair', async () => {
+    const r = await fetch(`${base}/api/jobs/${jobTravado}/cancelar`, { method: 'POST' })
+    expect(await r.json()).toEqual({ ok: true, sinalizado: true })
+    const det = await (await fetch(`${base}/api/jobs/${jobTravado}`)).json()
+    expect(det.job.status).toBe('rodando')
+  })
+
+  it('cancelar job que não está rodando não sinaliza nada', async () => {
     const jobId = await criarJob(base, TEXTO)
-    await banco.atualizarStatusJob(jobId, 'rodando')
-    const r2 = await fetch(`${base}/api/jobs/${jobId}/cancelar`, { method: 'POST' })
-    expect(await r2.json()).toEqual({ ok: true })
-    const det = await (await fetch(`${base}/api/jobs/${jobId}`)).json()
-    expect(det.job.status).toBe('pendente')
+    const r = await fetch(`${base}/api/jobs/${jobId}/cancelar`, { method: 'POST' })
+    expect(await r.json()).toEqual({ ok: true, sinalizado: false })
+  })
+})
+
+async function esperar(cond: () => Promise<boolean>, limiteMs = 5000): Promise<void> {
+  const ate = Date.now() + limiteMs
+  while (!(await cond())) {
+    if (Date.now() > ate) throw new Error('condição não atingida a tempo')
+    await new Promise(r => setTimeout(r, 20))
+  }
+}
+
+describe('API rodando job contra o simulador', () => {
+  const textoQtd = (qtd: number) => `Nome;CPF;Telefone;E-mail;Qtd\nMaria;86730169087;11987654321;m@x.com;${qtd}`
+  let site: SiteFalso
+  let dir5: string
+  let srv5: Awaited<ReturnType<typeof startServer>>
+  let base5: string
+  let banco5: SqliteBanco
+
+  async function subir(opts: Parameters<typeof iniciarSiteFalso>[0], extra: Partial<StartOpts> = {}) {
+    site = await iniciarSiteFalso(opts)
+    dir5 = mkdtempSync(join(tmpdir(), 'rifa-sim-'))
+    banco5 = SqliteBanco.abrir(join(dir5, 'test.db'))
+    srv5 = await startServer({
+      port: 0,
+      db: banco5,
+      envConfig: { cpf: '86730169087', senha: 'x', turma: '' },
+      login: (cpf, senha) => PodiumSession.login(cpf, senha, { baseUrl: site.baseUrl }),
+      instancia: 'teste',
+      ...extra,
+    })
+    base5 = `http://127.0.0.1:${(srv5.server.address() as AddressInfo).port}`
+  }
+
+  afterEach(async () => {
+    srv5.pararTodos()
+    await srv5.aguardarRunners(2000)
+    srv5.server.close()
+    await site.fechar()
+    rmSync(dir5, { recursive: true, force: true })
+  })
+
+  it('iniciar → exatamente qtd POSTs, linha ok, job concluído e lock liberado', async () => {
+    await subir({ proximoNumero: 1129, outrosVendedoresPorEnvio: 3 })
+    const id = await criarJob(base5, textoQtd(3))
+    expect((await fetch(`${base5}/api/jobs/${id}/iniciar`, { method: 'POST' })).status).toBe(200)
+    await esperar(async () => (await (await fetch(`${base5}/api/jobs/${id}`)).json()).job.status === 'concluido')
+    expect(site.posts).toHaveLength(3)
+    expect((await banco5.linhasDoJob(id))[0]).toMatchObject({ status: 'ok', tentativas: 3, confirmadas: 3 })
+    expect(await banco5.lockValido(id)).toBe(false)
+  })
+
+  it('perda do lock no meio do lote → para antes do próximo POST', async () => {
+    await subir({ proximoNumero: 1129, atrasoPostMs: 150 }, { renovacaoMs: 20 })
+    const id = await criarJob(base5, textoQtd(5))
+    await fetch(`${base5}/api/jobs/${id}/iniciar`, { method: 'POST' })
+    await esperar(async () => site.posts.length >= 1)
+    await banco5.liberarLock(id, 'teste', 'pendente') // outra instância "tomou" o job
+    await srv5.aguardarRunners(3000)
+    expect(site.posts.length).toBeLessThanOrEqual(2)
+    const l = (await banco5.linhasDoJob(id))[0]!
+    expect(l.status).not.toBe('ok')
+    expect(l.tentativas).toBe(site.posts.length)
+  })
+
+  it('pararTodos (SIGTERM) → nenhum POST novo e iniciar responde 503', async () => {
+    await subir({ proximoNumero: 1129, atrasoPostMs: 100 })
+    const id = await criarJob(base5, textoQtd(5))
+    await fetch(`${base5}/api/jobs/${id}/iniciar`, { method: 'POST' })
+    await esperar(async () => site.posts.length >= 1)
+    srv5.pararTodos()
+    expect(await srv5.aguardarRunners(3000)).toBe(true)
+    const enviados = site.posts.length
+    expect(enviados).toBeLessThan(5)
+    expect((await banco5.linhasDoJob(id))[0]).toMatchObject({ status: 'pendente', tentativas: enviados, confirmadas: enviados })
+    expect((await fetch(`${base5}/api/jobs/${id}/iniciar`, { method: 'POST' })).status).toBe(503)
   })
 })
 
@@ -273,11 +356,11 @@ describe('API com credenciais via ambiente', () => {
 })
 
 describe('reconciliação no boot', () => {
-  it('rodando e cadastrando voltam a pendente ao subir o servidor', async () => {
+  it('job rodando com lock expirado volta a pendente; linha sem envio pendente volta a pendente', async () => {
     const dir4 = mkdtempSync(join(tmpdir(), 'rifa-boot-'))
     const b = SqliteBanco.abrir(join(dir4, 'test.db'))
     const id = await b.criarJob([{ nome: 'Maria', cpf: '86730169087', telefone: '11987654321', email: 'm@x.com', qtd: 1 }])
-    await b.atualizarStatusJob(id, 'rodando')
+    await b.tentarIniciarJob(id, 'antiga', Date.now() - 2 * LEASE_MS)
     const linha = (await b.linhasDoJob(id))[0]!
     await b.atualizarLinha({ ...linha, status: 'cadastrando' })
     const srv4 = await startServer({ port: 0, db: b })
@@ -286,6 +369,26 @@ describe('reconciliação no boot', () => {
       const det = await (await fetch(`${base4}/api/jobs/${id}`)).json()
       expect(det.job.status).toBe('pendente')
       expect(det.linhas[0].status).toBe('pendente')
+    } finally {
+      srv4.server.close()
+      rmSync(dir4, { recursive: true, force: true })
+    }
+  })
+
+  it('não libera lock válido de outra instância (deploy sobreposto)', async () => {
+    const dir4 = mkdtempSync(join(tmpdir(), 'rifa-boot-'))
+    const b = SqliteBanco.abrir(join(dir4, 'test.db'))
+    const id = await b.criarJob([{ nome: 'Maria', cpf: '86730169087', telefone: '11987654321', email: 'm@x.com', qtd: 1 }])
+    await b.tentarIniciarJob(id, 'antiga')
+    const linha = (await b.linhasDoJob(id))[0]!
+    await b.atualizarLinha({ ...linha, status: 'cadastrando', base_cpf: 0, tentativas: 1 })
+    const srv4 = await startServer({ port: 0, db: b, envConfig: { cpf: '86730169087', senha: 'x', turma: '' } })
+    const base4 = `http://127.0.0.1:${(srv4.server.address() as AddressInfo).port}`
+    try {
+      const det = await (await fetch(`${base4}/api/jobs/${id}`)).json()
+      expect(det.job.status).toBe('rodando')
+      expect(det.linhas[0].status).toBe('cadastrando')
+      expect((await fetch(`${base4}/api/jobs/${id}/iniciar`, { method: 'POST' })).status).toBe(409)
     } finally {
       srv4.server.close()
       rmSync(dir4, { recursive: true, force: true })
