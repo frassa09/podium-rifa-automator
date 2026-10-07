@@ -90,7 +90,7 @@ $('#btn-pin').addEventListener('click', async () => {
     refreshLoginBadge()
   } else {
     st.className = 'status erro'
-    st.textContent = 'PIN inválido.'
+    st.textContent = r.status === 429 ? ((await r.json().catch(() => null))?.erro ?? 'Muitas tentativas.') : 'PIN inválido.'
   }
 })
 

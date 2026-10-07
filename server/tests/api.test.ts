@@ -353,7 +353,7 @@ describe('API com PIN', () => {
   beforeAll(async () => {
     dir2 = mkdtempSync(join(tmpdir(), 'rifa-pin-'))
     const banco2 = SqliteBanco.abrir(join(dir2, 'test.db'))
-    srv2 = await startServer({ port: 0, db: banco2, pin: '1234' })
+    srv2 = await startServer({ port: 0, db: banco2, pin: '1234', atrasoPinMs: 0 })
     base2 = `http://127.0.0.1:${(srv2.server.address() as AddressInfo).port}`
   })
 
@@ -375,6 +375,67 @@ describe('API com PIN', () => {
     const ok = await fetch(`${base2}/api/config`, { headers: { 'X-PIN': '1234' } })
     expect(ok.status).toBe(200)
     expect((await ok.json()).configurado).toBe(false)
+  })
+
+  it('6ª tentativa errada do mesmo IP fica bloqueada (429) mesmo com o PIN certo; sem PIN não conta', async () => {
+    for (let i = 0; i < 10; i++) expect((await fetch(`${base2}/api/jobs`)).status).toBe(401) // sem X-PIN
+    expect((await fetch(`${base2}/api/config`, { headers: { 'X-PIN': '1234' } })).status).toBe(200)
+    for (let i = 0; i < 5; i++) {
+      expect((await fetch(`${base2}/api/config`, { headers: { 'X-PIN': `errado${i}` } })).status).toBe(401)
+    }
+    const bloqueado = await fetch(`${base2}/api/config`, { headers: { 'X-PIN': '1234' } })
+    expect(bloqueado.status).toBe(429)
+    expect((await bloqueado.json()).erro).toMatch(/Tente de novo em 15 min/)
+    expect((await fetch(`${base2}/api/health`)).status).toBe(200)
+  })
+
+  it('corpo JSON acima de 5 MB é recusado', async () => {
+    const r = await fetch(`${base2}/api/jobs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-PIN': '1234' },
+      body: JSON.stringify({ texto: 'x'.repeat(6 * 1024 * 1024) }),
+    })
+    expect(r.status).toBe(413)
+  })
+})
+
+describe('Produção (§2.7)', () => {
+  const env = { cpf: '86730169087', senha: 'x', turma: '' }
+  let dirP: string
+  let bancoP: SqliteBanco
+
+  beforeAll(() => {
+    dirP = mkdtempSync(join(tmpdir(), 'rifa-prod-'))
+    bancoP = SqliteBanco.abrir(join(dirP, 'test.db'))
+  })
+
+  afterAll(() => {
+    rmSync(dirP, { recursive: true, force: true })
+  })
+
+  it('não sobe sem PIN ou com PIN curto', async () => {
+    await expect(startServer({ port: 0, db: bancoP, producao: true, pin: '', envConfig: env })).rejects.toThrow(/RIFA_PIN/)
+    await expect(startServer({ port: 0, db: bancoP, producao: true, pin: '12345678901', envConfig: env })).rejects.toThrow(/12 caracteres/)
+  })
+
+  it('não sobe sem RIFA_CPF/RIFA_SENHA no ambiente (senha nunca no banco)', async () => {
+    await expect(startServer({ port: 0, db: bancoP, producao: true, pin: 'pin-bem-longo-123', envConfig: null })).rejects.toThrow(/RIFA_CPF e RIFA_SENHA/)
+  })
+
+  it('sobe com PIN forte e credenciais no ambiente; gravar senha pela API é recusado', async () => {
+    const s = await startServer({ port: 0, db: bancoP, producao: true, pin: 'pin-bem-longo-123', envConfig: env, atrasoPinMs: 0 })
+    const b = `http://127.0.0.1:${(s.server.address() as AddressInfo).port}`
+    try {
+      const r = await fetch(`${b}/api/config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-PIN': 'pin-bem-longo-123' },
+        body: JSON.stringify({ cpf: '86730169087', senha: 'outra', turma: '1' }),
+      })
+      expect(r.status).toBe(409)
+      expect(await bancoP.lerConfig()).toBeNull()
+    } finally {
+      s.server.close()
+    }
   })
 })
 

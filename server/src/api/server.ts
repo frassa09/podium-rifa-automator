@@ -51,7 +51,14 @@ export interface StartOpts {
   // Identidade desta instância no lock de execução (padrão: host:pid:aleatório).
   instancia?: string
   renovacaoMs?: number
+  // Padrão: DATABASE_URL presente ou NODE_ENV=production.
+  producao?: boolean
+  atrasoPinMs?: number
 }
+
+export const PIN_MIN_PRODUCAO = 12
+const PIN_MAX_FALHAS = 5
+const PIN_BLOQUEIO_MS = 15 * 60_000
 
 export async function startServer(opts: StartOpts = {}): Promise<{
   app: express.Express
@@ -68,12 +75,26 @@ export async function startServer(opts: StartOpts = {}): Promise<{
   const instancia = opts.instancia ?? `${hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`
   const renovacaoMs = opts.renovacaoMs ?? 15_000
   let encerrando = false
+  const producao = opts.producao ?? (Boolean(process.env.DATABASE_URL) || process.env.NODE_ENV === 'production')
+  const atrasoPinMs = opts.atrasoPinMs ?? 1000
+
+  // Em produção (URL pública) nada sobe aberto nem com senha da Podium gravada no banco.
+  if (producao) {
+    if (pin.length < PIN_MIN_PRODUCAO) {
+      throw new Error(`Produção exige RIFA_PIN com pelo menos ${PIN_MIN_PRODUCAO} caracteres`)
+    }
+    if (!envConfig) {
+      throw new Error('Produção exige RIFA_CPF e RIFA_SENHA nas variáveis de ambiente (senha não vai para o banco)')
+    }
+  }
 
   // Não libera lock válido de outra instância (deploy sobrepondo); só os expirados.
   await banco.reconciliarExpirados()
 
   const app = express()
-  app.use(express.json({ limit: '50mb' }))
+  // Atrás do proxy do Render, req.ip vem de X-Forwarded-For (1 salto). Na LAN, não confiar no cabeçalho.
+  if (producao) app.set('trust proxy', 1)
+  app.use(express.json({ limit: '5mb' }))
   app.use(express.static(WEB_DIR))
   app.use((req, res, next) => {
     res.setHeader('X-Powered-By', 'rifa-automator')
@@ -81,17 +102,37 @@ export async function startServer(opts: StartOpts = {}): Promise<{
   })
 
   if (pin) {
-    app.use((req, res, next) => {
-      if (req.path === '/api/health') {
+    // Após PIN_MAX_FALHAS erros do mesmo IP, bloqueia por PIN_BLOQUEIO_MS (memória basta: instância única).
+    // Pedido sem PIN (tela recém-aberta) não conta como tentativa.
+    const tentativas = new Map<string, { falhas: number; bloqueadoAte: number }>()
+    app.use(async (req, res, next) => {
+      if (req.path === '/api/health' || !req.path.startsWith('/api/')) {
         next()
         return
       }
-      const recebido = req.header('X-PIN')
-      if (!recebido || !pinValido(recebido, pin)) {
-        res.status(401).json({ ok: false, erro: 'PIN inválido' })
+      const ip = req.ip ?? 'desconhecido'
+      const agora = Date.now()
+      const reg = tentativas.get(ip)
+      if (reg && reg.bloqueadoAte > agora) {
+        const min = Math.ceil((reg.bloqueadoAte - agora) / 60_000)
+        res.status(429).json({ ok: false, erro: `Muitas tentativas de PIN. Tente de novo em ${min} min.` })
         return
       }
-      next()
+      const recebido = req.header('X-PIN')
+      if (recebido && pinValido(recebido, pin)) {
+        tentativas.delete(ip)
+        next()
+        return
+      }
+      if (recebido) {
+        await new Promise(r => setTimeout(r, atrasoPinMs))
+        const falhas = (reg?.falhas ?? 0) + 1
+        tentativas.set(ip, falhas >= PIN_MAX_FALHAS ? { falhas: 0, bloqueadoAte: agora + PIN_BLOQUEIO_MS } : { falhas, bloqueadoAte: 0 })
+        if (tentativas.size > 10_000) {
+          for (const [k, v] of tentativas) if (v.bloqueadoAte < agora && v.falhas === 0) tentativas.delete(k)
+        }
+      }
+      res.status(401).json({ ok: false, erro: 'PIN inválido' })
     })
   } else {
     console.log('[rifa] Aviso: RIFA_PIN ausente — autenticação desligada (modo LAN).')
