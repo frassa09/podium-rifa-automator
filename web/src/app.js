@@ -313,10 +313,10 @@ function renderLinhas() {
     corpo.textContent = l.nome
     corpo.appendChild(document.createElement('br'))
     const small = document.createElement('small')
-    small.textContent = l.status === 'erro' ? l.erro : (l.numeros || '')
+    small.textContent = l.status === 'erro' || l.status === 'incerto' ? l.erro : (l.numeros || '')
     corpo.appendChild(small)
     const status = document.createElement('span')
-    status.textContent = l.status
+    status.textContent = l.status === 'incerto' ? 'incerto — conferir no site' : l.status
     li.append(dot, corpo, status)
     ul.appendChild(li)
   }
@@ -329,6 +329,7 @@ async function refreshJob() {
     $('#r-total').textContent = d.resumo.total
     $('#r-ok').textContent = d.resumo.ok
     $('#r-erro').textContent = d.resumo.erro
+    $('#r-incerto').textContent = d.resumo.incerto ?? 0
     $('#r-pend').textContent = d.resumo.pendente
     const h = $('#job-header')
     h.textContent = ''

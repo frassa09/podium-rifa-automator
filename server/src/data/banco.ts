@@ -42,6 +42,9 @@ function normalizarLinha(r: Record<string, unknown>): LinhaJob {
     numeros: String(r.numeros),
     base: r.base == null ? null : num(r.base),
     enviadas: num(r.enviadas),
+    base_cpf: r.base_cpf == null ? null : num(r.base_cpf),
+    tentativas: num(r.tentativas),
+    confirmadas: num(r.confirmadas),
   }
 }
 
@@ -91,16 +94,20 @@ export abstract class Banco {
 
   async atualizarLinha(l: LinhaJob): Promise<void> {
     await this.executar(async e => {
-      await e.changes('UPDATE job_linhas SET status = ?, erro = ?, numeros = ?, base = ?, enviadas = ? WHERE id = ?', [l.status, l.erro, l.numeros, l.base, l.enviadas, l.id])
+      await e.changes(
+        'UPDATE job_linhas SET status = ?, erro = ?, numeros = ?, base = ?, enviadas = ?, base_cpf = ?, tentativas = ?, confirmadas = ? WHERE id = ?',
+        [l.status, l.erro, l.numeros, l.base, l.enviadas, l.base_cpf, l.tentativas, l.confirmadas, l.id]
+      )
     })
   }
 
   async resumoJob(jobId: number): Promise<ResumoProgresso> {
     return this.executar(async e => {
-      const rows = await e.rows<{ total: number | null; ok: number | null; erro: number | null; pendente: number | null }>(
+      const rows = await e.rows<{ total: number | null; ok: number | null; erro: number | null; incerto: number | null; pendente: number | null }>(
         `SELECT COUNT(*) AS total,
                 SUM(CASE WHEN status = 'ok' THEN 1 ELSE 0 END) AS ok,
                 SUM(CASE WHEN status = 'erro' THEN 1 ELSE 0 END) AS erro,
+                SUM(CASE WHEN status = 'incerto' THEN 1 ELSE 0 END) AS incerto,
                 SUM(CASE WHEN status IN ('pendente','cadastrando') THEN 1 ELSE 0 END) AS pendente
          FROM job_linhas WHERE job_id = ?`,
         [jobId]
@@ -111,6 +118,7 @@ export abstract class Banco {
         total: num(r?.total ?? 0),
         ok: num(r?.ok ?? 0),
         erro: num(r?.erro ?? 0),
+        incerto: num(r?.incerto ?? 0),
         pendente: num(r?.pendente ?? 0),
         ativo: jobs[0]?.status === 'rodando',
       }

@@ -10,38 +10,57 @@ const dispatcher = new Agent({ connect: { rejectUnauthorized: false } })
 
 const TIMEOUT = 30000
 
-const ROTULOS_NUMERO = new Set(['n', 'no', 'num', 'numeros', 'nro', 'numero', 'numero da rifa', 'num da rifa', 'rifa'])
+const ROTULOS_NUMERO = new Set(['n', 'no', 'num', 'nro', 'numero'])
 
-export function parseNumeroMaximo(html: string): number {
+export interface RifaNaTabela {
+  numero: number
+  cpf: string
+}
+
+const textoCelula = (c: string): string =>
+  c.replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').trim()
+
+const celulas = (tr: string): string[] =>
+  [...tr.matchAll(/<t[hd][^>]*>([\s\S]*?)<\/t[hd]>/gi)].map(m => textoCelula(m[1]!))
+
+// Rótulo só com letras ASCII: "Nº", "N°" e "N�" (Latin-1 lido como UTF-8) viram "n".
+const rotulo = (s: string): string =>
+  s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z ]/g, '').trim()
+
+// Lê a tabela #imoveis INTEIRA de form_rifa (§0: o servidor manda todas as linhas da conta;
+// a paginação do DataTables é só no navegador). Qualquer coisa fora do formato esperado
+// lança erro — nunca devolve lista parcial nem vazia por padrão (spec 2026-10-07 §2.1).
+export function parseRifasDaTabela(html: string): RifaNaTabela[] {
   if (!/<form[^>]*action=["']?[^"'>]*registrar_rifa\.php/i.test(html)) {
     throw new Error('Página não é o formulário autenticado de rifas (sessão expirada?)')
   }
-  const tabelas = html.match(/<table[\s\S]*?<\/table>/gi) ?? []
-  let maior = 0
-  for (const tabela of tabelas) {
-    const linhas = tabela.match(/<tr[\s\S]*?<\/tr>/gi) ?? []
-    for (let li = 0; li < linhas.length; li++) {
-      const celulas = [...(linhas[li]!.matchAll(/<t(?:h|d)[\s\S]*?<\/t(?:h|d)>/gi))].map(m => m[0]!)
-      for (let ci = 0; ci < celulas.length; ci++) {
-        const rotulo = celulas[ci]!
-          .replace(/<[^>]*>/g, '')
-          .normalize('NFD')
-          .replace(/[\u0300-\u036f]/g, '')
-          .toLowerCase()
-          .replace(/[º°]/g, '')
-          .trim()
-        if (!ROTULOS_NUMERO.has(rotulo)) continue
-        for (let r = li + 1; r < linhas.length; r++) {
-          const celulasCorpo = [...(linhas[r]!.matchAll(/<t(?:h|d)[\s\S]*?<\/t(?:h|d)>/gi))].map(m => m[0]!)
-          const celula = celulasCorpo[ci]
-          if (!celula) continue
-          const num = /(\d+)/.exec(celula.replace(/<[^>]*>/g, '').trim())
-          if (num) maior = Math.max(maior, Number(num[0]))
-        }
-      }
+  const tabela = /<table[^>]*id=["']imoveis["'][^>]*>([\s\S]*?)<\/table>/i.exec(html)?.[1]
+  const thead = tabela && /<thead[^>]*>([\s\S]*?)<\/thead>/i.exec(tabela)?.[1]
+  const tbody = tabela && /<tbody[^>]*>([\s\S]*?)<\/tbody>/i.exec(tabela)?.[1]
+  if (thead == null || tbody == null) throw new Error('Tabela de rifas (#imoveis) não encontrada ou incompleta')
+  const rotulos = celulas(thead).map(rotulo)
+  const iNum = rotulos.findIndex(r => ROTULOS_NUMERO.has(r))
+  const iCpf = rotulos.indexOf('cpf')
+  if (iNum < 0 || iCpf < 0) throw new Error(`Colunas Nº/CPF não encontradas na tabela (${rotulos.join(', ')})`)
+  return (tbody.match(/<tr[\s\S]*?<\/tr>/gi) ?? []).map((tr, i) => {
+    const cs = celulas(tr)
+    const numero = cs[iNum] ?? ''
+    const cpf = apenasDigitos(cs[iCpf] ?? '')
+    if (cs.length !== rotulos.length || !/^\d+$/.test(numero) || cpf.length !== 11) {
+      throw new Error(`Linha ${i + 1} da tabela de rifas fora do formato esperado`)
     }
-  }
-  return maior
+    return { numero: Number(numero), cpf }
+  })
+}
+
+export function contarRifasDoCpf(rifas: RifaNaTabela[], cpf: string): number {
+  const alvo = apenasDigitos(cpf)
+  return rifas.filter(r => r.cpf === alvo).length
+}
+
+export interface RespostaRegistro {
+  status: number
+  location: string
 }
 
 export class ErroLogin extends Error {
@@ -147,7 +166,9 @@ export class PodiumSession {
     return this.req(path)
   }
 
-  async submeterRifa(p: Pessoa): Promise<void> {
+  // Um único POST, sem seguir redirect: o timeout cobre só o envio, não o GET da tabela.
+  // A resposta não decide nada; só a medição pela tabela confirma (§2.2.e).
+  async submeterRifa(p: Pessoa): Promise<RespostaRegistro> {
     const body = new URLSearchParams({
       'campos[nome]': p.nome,
       'campos[cpf]': maskCPF(p.cpf),
@@ -155,13 +176,25 @@ export class PodiumSession {
       'campos[email]': p.email,
       enviar: 'Enviar',
     }).toString()
-    await this.req('/registrar_rifa.php', { method: 'POST', body })
+    const res = await this.req('/registrar_rifa.php', { method: 'POST', body }, false)
+    await res.body?.cancel()
+    return { status: res.status, location: res.headers.get('location') ?? '' }
   }
 
-  async lerMaiorNumero(): Promise<number> {
+  // O site responde ISO-8859-1; Response.text() sempre decodifica UTF-8 (§0).
+  private static async lerHtml(res: Response): Promise<string> {
+    const charset = /charset=([\w-]+)/i.exec(res.headers.get('content-type') ?? '')?.[1] ?? 'iso-8859-1'
+    return new TextDecoder(charset).decode(await res.arrayBuffer())
+  }
+
+  async lerRifas(): Promise<RifaNaTabela[]> {
     const res = await this.req('/main.php?conteudo=form_rifa')
-    const html = await res.text()
-    return parseNumeroMaximo(html)
+    if (res.status !== 200) throw new Error(`form_rifa respondeu ${res.status}`)
+    return parseRifasDaTabela(await PodiumSession.lerHtml(res))
+  }
+
+  async contarRifasDoCpf(cpf: string): Promise<number> {
+    return contarRifasDoCpf(await this.lerRifas(), cpf)
   }
 
   async checarSessao(): Promise<boolean> {

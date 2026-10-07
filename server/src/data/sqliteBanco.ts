@@ -27,7 +27,10 @@ const DDL =
     erro TEXT,
     numeros TEXT NOT NULL DEFAULT '',
     base INTEGER,
-    enviadas INTEGER NOT NULL DEFAULT 0
+    enviadas INTEGER NOT NULL DEFAULT 0,
+    base_cpf INTEGER,
+    tentativas INTEGER NOT NULL DEFAULT 0,
+    confirmadas INTEGER NOT NULL DEFAULT 0
   );
   CREATE TABLE IF NOT EXISTS logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -97,6 +100,9 @@ export class SqliteBanco extends Banco {
     const cols = db.prepare('PRAGMA table_info(job_linhas)').all() as { name: string }[]
     if (!cols.some(c => c.name === 'base')) db.exec('ALTER TABLE job_linhas ADD COLUMN base INTEGER')
     if (!cols.some(c => c.name === 'enviadas')) db.exec('ALTER TABLE job_linhas ADD COLUMN enviadas INTEGER NOT NULL DEFAULT 0')
+    if (!cols.some(c => c.name === 'base_cpf')) db.exec('ALTER TABLE job_linhas ADD COLUMN base_cpf INTEGER')
+    if (!cols.some(c => c.name === 'tentativas')) db.exec('ALTER TABLE job_linhas ADD COLUMN tentativas INTEGER NOT NULL DEFAULT 0')
+    if (!cols.some(c => c.name === 'confirmadas')) db.exec('ALTER TABLE job_linhas ADD COLUMN confirmadas INTEGER NOT NULL DEFAULT 0')
     db.close()
   }
 

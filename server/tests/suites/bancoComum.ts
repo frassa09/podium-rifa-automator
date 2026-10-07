@@ -22,7 +22,7 @@ export function suíteComumBanco(novo: () => Promise<Banco>): void {
     const id = await banco.criarJob([pessoaExemplo, { ...pessoaExemplo, nome: 'João', cpf: '12345678900' }])
     expect(await banco.linhasDoJob(id)).toHaveLength(2)
     expect((await banco.linhasDoJob(id))[0]?.seq).toBe(1)
-    expect(await banco.resumoJob(id)).toEqual({ total: 2, ok: 0, erro: 0, pendente: 2, ativo: false })
+    expect(await banco.resumoJob(id)).toEqual({ total: 2, ok: 0, erro: 0, incerto: 0, pendente: 2, ativo: false })
   })
 
   it('atualiza linha e reprocessa erros', async () => {
@@ -33,6 +33,26 @@ export function suíteComumBanco(novo: () => Promise<Banco>): void {
     expect((await banco.resumoJob(id)).erro).toBe(1)
     await banco.reprocessarErros(id)
     expect((await banco.linhasDoJob(id))[0]?.status).toBe('pendente')
+  })
+
+  it('persiste o write-ahead log (base_cpf, tentativas, confirmadas) e conta incerto no resumo', async () => {
+    const banco = await novo()
+    const id = await banco.criarJob([pessoaExemplo])
+    const linha = (await banco.linhasDoJob(id))[0]!
+    expect(linha).toMatchObject({ base_cpf: null, tentativas: 0, confirmadas: 0 })
+    await banco.atualizarLinha({ ...linha, status: 'incerto', base_cpf: 7, tentativas: 2, confirmadas: 1 })
+    expect((await banco.linhasDoJob(id))[0]).toMatchObject({ status: 'incerto', base_cpf: 7, tentativas: 2, confirmadas: 1 })
+    expect(await banco.resumoJob(id)).toMatchObject({ incerto: 1, erro: 0, pendente: 0 })
+  })
+
+  it('reprocessar erros não toca em linhas incertas', async () => {
+    const banco = await novo()
+    const id = await banco.criarJob([pessoaExemplo, { ...pessoaExemplo, cpf: '12345678900' }])
+    const [a, b] = await banco.linhasDoJob(id)
+    await banco.atualizarLinha({ ...a!, status: 'erro', erro: 'x' })
+    await banco.atualizarLinha({ ...b!, status: 'incerto', erro: 'y', base_cpf: 0, tentativas: 1 })
+    await banco.reprocessarErros(id)
+    expect((await banco.linhasDoJob(id)).map(l => l.status)).toEqual(['pendente', 'incerto'])
   })
 
   it('logs são registrados com nível', async () => {

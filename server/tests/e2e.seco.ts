@@ -11,7 +11,7 @@ async function main() {
   }
   const s = await PodiumSession.login(cpf, senha)
   console.log('Login OK. Turma:', s.turma)
-  console.log('Maior Nº atual:', await s.lerMaiorNumero())
+  console.log('Rifas na tabela:', (await s.lerRifas()).length)
   console.log('Sessão válida:', await s.checarSessao())
 }
 

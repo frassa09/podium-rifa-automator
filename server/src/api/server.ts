@@ -224,27 +224,32 @@ export async function startServer(opts: StartOpts = {}): Promise<{
       sessao = await login(config.cpf, config.senha)
       const automator = new Automator({
         getSessao: async () => sessao,
+        // Um POST por chamada; nunca repetir aqui. Se a sessão caiu, renova para a próxima medição.
         submeterLinha: async (s, p) => {
           try {
-            await (s as PodiumSession).submeterRifa(p)
-          } catch {
-            const okSessao = await (s as PodiumSession).checarSessao()
+            return await (s as PodiumSession).submeterRifa(p)
+          } catch (e) {
+            const okSessao = await (s as PodiumSession).checarSessao().catch(() => false)
             if (!okSessao) sessao = await login(config.cpf, config.senha)
-            throw new Error('sessão renovada, tentando de novo')
+            throw e
           }
         },
-        lerMaiorNumero: async s => (s as PodiumSession).lerMaiorNumero(),
+        // Leitura é idempotente: pode renovar a sessão e ler de novo uma vez.
+        contarRifasDoCpf: async (s, cpf) => {
+          try {
+            return await (s as PodiumSession).contarRifasDoCpf(cpf)
+          } catch {
+            sessao = await login(config.cpf, config.senha)
+            return sessao.contarRifasDoCpf(cpf)
+          }
+        },
+        salvarLinha: l => banco.atualizarLinha(l),
         log: (msg, nivel) => {
-          void banco.registrarLog(msg, nivel ?? 'info', jobId)
+          banco.registrarLog(msg, nivel ?? 'info', jobId).catch(e => console.error('falha ao gravar log:', e))
         },
         deveParar: () => deveParar,
-        onProgress: l => {
-          void banco.atualizarLinha(l)
-        },
       })
-      await automator.start(await banco.linhasDoJob(jobId), l => {
-        void banco.atualizarLinha(l)
-      })
+      await automator.start(await banco.linhasDoJob(jobId))
       await banco.atualizarStatusJob(jobId, deveParar ? 'pendente' : 'concluido')
     } catch (e) {
       await banco.registrarLog(`Erro ao rodar job #${jobId}: ${(e as Error).message}`, 'error', jobId)

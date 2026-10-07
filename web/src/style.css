@@ -105,6 +105,7 @@ input, textarea {
 }
 .resumo .ok b { color: var(--ok); }
 .resumo .erro b { color: var(--erro); }
+.resumo .incerto b { color: var(--warn); }
 
 .botoes-job { display: flex; gap: 8px; }
 
@@ -127,6 +128,8 @@ input, textarea {
 .st.ok { background: var(--ok); }
 .st.erro { background: var(--erro); }
 .st.cadastrando { background: var(--warn); animation: pulse 1s infinite; }
+/* incerto: envio sem confirmação no site; só um humano decide */
+.st.incerto { background: var(--warn); outline: 2px solid var(--erro); }
 @keyframes pulse { 50% { opacity: 0.3; } }
 
 .logs {
