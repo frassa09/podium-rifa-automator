@@ -4,7 +4,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { abrirBanco, type Banco } from '../data/abrirBanco.ts'
 import { Automator } from '../engine/automator.ts'
-import { PodiumSession } from '../podium/session.ts'
+import { PodiumSession, contarRifasDoCpf } from '../podium/session.ts'
 import { pinValido } from '../utils/pin.ts'
 import { parseLinhas, validarPessoa, type LinhaParseada } from '../utils/tableParser.ts'
 import { apenasDigitos } from '../utils/cpf.ts'
@@ -344,6 +344,103 @@ export async function startServer(opts: StartOpts = {}): Promise<{
     await banco.reprocessarErros(id)
     await banco.registrarLog('Reprocessando erros', 'info', id)
     res.json({ ok: true })
+  })
+
+  // §2.3 — humano no circuito. Nada aqui roda com job ativo: um segundo login na mesma
+  // conta poderia derrubar a sessão do runner no meio de um envio.
+  async function exigirSemJobAtivo(res: express.Response): Promise<boolean> {
+    if (runners.size > 0 || (await banco.algumLockValido())) {
+      res.status(409).json({ ok: false, erro: 'Há um job rodando; confira depois que ele terminar' })
+      return false
+    }
+    return true
+  }
+
+  app.get('/api/jobs/:id/conferencia', async (req, res) => {
+    const id = Number(req.params.id)
+    const config = await configAtual()
+    if (!config) {
+      res.status(400).json({ ok: false, erro: 'Configure o login primeiro' })
+      return
+    }
+    const linhas = await banco.linhasDoJob(id)
+    if (!linhas.length) {
+      res.status(404).json({ ok: false, erro: 'Job não encontrado' })
+      return
+    }
+    if (!(await exigirSemJobAtivo(res))) return
+    try {
+      const rifas = await (await login(config.cpf, config.senha)).lerRifas()
+      res.json({
+        ok: true,
+        linhas: linhas.map(l => {
+          const site = contarRifasDoCpf(rifas, l.cpf)
+          return {
+            id: l.id, seq: l.seq, nome: l.nome, cpf: l.cpf, status: l.status, qtd: l.qtd,
+            base_cpf: l.base_cpf, tentativas: l.tentativas, confirmadas: l.confirmadas,
+            // Rifas do CPF no site hoje e quantas surgiram desde a base desta linha.
+            site, desdeBase: l.base_cpf === null ? null : site - l.base_cpf,
+          }
+        }),
+      })
+    } catch (e) {
+      res.status(502).json({ ok: false, erro: `Não foi possível ler o site: ${(e as Error).message}` })
+    }
+  })
+
+  app.post('/api/linhas/:id/resolver', async (req, res) => {
+    const acao = (req.body as { acao?: string } | undefined)?.acao
+    if (acao !== 'marcar_ok' && acao !== 'liberar_reenvio') {
+      res.status(400).json({ ok: false, erro: "acao deve ser 'marcar_ok' ou 'liberar_reenvio'" })
+      return
+    }
+    const l = await banco.linhaPorId(Number(req.params.id))
+    if (!l) {
+      res.status(404).json({ ok: false, erro: 'Linha não encontrada' })
+      return
+    }
+    if (l.status !== 'incerto') {
+      res.status(409).json({ ok: false, erro: 'Só linhas incertas podem ser resolvidas' })
+      return
+    }
+    if (!(await exigirSemJobAtivo(res))) return
+
+    if (acao === 'marcar_ok') {
+      await banco.atualizarLinha({ ...l, status: 'ok', erro: null })
+      await banco.registrarLog(`Linha #${l.id} marcada ok manualmente após conferência`, 'warn', l.job_id)
+      res.json({ ok: true })
+      return
+    }
+
+    // liberar_reenvio: só se a contagem atual do site PROVAR que faltam rifas.
+    const config = await configAtual()
+    if (!config) {
+      res.status(400).json({ ok: false, erro: 'Configure o login primeiro' })
+      return
+    }
+    if (l.base_cpf === null) {
+      res.status(409).json({ ok: false, erro: 'Linha sem contagem base; não dá para provar quantas faltam. Confira no site e marque ok se for o caso.' })
+      return
+    }
+    let atual: number
+    try {
+      atual = await (await login(config.cpf, config.senha)).contarRifasDoCpf(l.cpf)
+    } catch (e) {
+      res.status(502).json({ ok: false, erro: `Não foi possível ler o site: ${(e as Error).message}` })
+      return
+    }
+    const confirmadas = atual - l.base_cpf
+    if (confirmadas < 0) {
+      res.status(409).json({ ok: false, erro: `O site mostra ${atual} rifa(s) do CPF, menos que a base ${l.base_cpf}. Confira manualmente.` })
+      return
+    }
+    if (confirmadas >= l.qtd) {
+      res.status(409).json({ ok: false, erro: `O site já mostra ${confirmadas} rifa(s) desde a base (pedido: ${l.qtd}). Marque ok em vez de reenviar.` })
+      return
+    }
+    await banco.atualizarLinha({ ...l, status: 'pendente', erro: null, tentativas: confirmadas, confirmadas, enviadas: confirmadas })
+    await banco.registrarLog(`Linha #${l.id} liberada para reenvio: ${confirmadas} de ${l.qtd} confirmada(s) no site`, 'warn', l.job_id)
+    res.json({ ok: true, confirmadas, faltam: l.qtd - confirmadas })
   })
 
   const server = createServer(app)

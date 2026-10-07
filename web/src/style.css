@@ -121,6 +121,8 @@ input, textarea {
   padding: 12px;
   font-size: 0.9rem;
 }
+.linhas li .acoes { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; }
+.linhas .conferencia { color: var(--muted); }
 .linhas .st {
   width: 8px; height: 8px; border-radius: 50%;
   background: var(--muted);

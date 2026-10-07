@@ -19,6 +19,8 @@ export interface OpcoesSiteFalso {
   codificacao?: 'latin1' | 'utf8'
   // Demora do site para responder ao registro (a rifa já foi criada).
   atrasoPostMs?: number
+  // Os primeiros N POSTs respondem 302 mas NÃO criam a rifa.
+  postsSemCriar?: number
 }
 
 export interface PostRegistrar {
@@ -74,6 +76,11 @@ export async function iniciarSiteFalso(opts: OpcoesSiteFalso): Promise<SiteFalso
       }
       if (u.pathname === '/registrar_rifa.php' && req.method === 'POST') {
         const campos = Object.fromEntries(new URLSearchParams(corpo))
+        if (posts.length < (opts.postsSemCriar ?? 0)) {
+          posts.push({ numero: 0, campos })
+          res.writeHead(302, { Location: 'main.php?conteudo=form_rifa' }).end()
+          return
+        }
         const numero = proximo
         posts.push({ numero, campos })
         linhas.push(

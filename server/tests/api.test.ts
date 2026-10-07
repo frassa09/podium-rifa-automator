@@ -281,6 +281,68 @@ describe('API rodando job contra o simulador', () => {
     expect((await banco5.linhasDoJob(id))[0]).toMatchObject({ status: 'pendente', tentativas: enviados, confirmadas: enviados })
     expect((await fetch(`${base5}/api/jobs/${id}/iniciar`, { method: 'POST' })).status).toBe(503)
   })
+
+  const statusJob = async (id: number) => (await (await fetch(`${base5}/api/jobs/${id}`)).json()).job.status as string
+  const resolver = (linhaId: number, acao: string) =>
+    fetch(`${base5}/api/linhas/${linhaId}/resolver`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ acao }) })
+
+  it('§2.3: envio não confirmado → incerto; conferência mostra a diferença; liberar_reenvio envia só o que falta', async () => {
+    await subir({ proximoNumero: 1129, postsSemCriar: 1 })
+    const id = await criarJob(base5, textoQtd(2))
+    await fetch(`${base5}/api/jobs/${id}/iniciar`, { method: 'POST' })
+    await esperar(async () => (await statusJob(id)) === 'pendente')
+    const l = (await banco5.linhasDoJob(id))[0]!
+    expect(l).toMatchObject({ status: 'incerto', tentativas: 1, confirmadas: 0 })
+    expect(site.posts).toHaveLength(1)
+
+    const conf = await (await fetch(`${base5}/api/jobs/${id}/conferencia`)).json()
+    expect(conf.linhas[0]).toMatchObject({ status: 'incerto', qtd: 2, base_cpf: 0, tentativas: 1, site: 0, desdeBase: 0 })
+
+    // Reprocessar erros não toca na linha incerta.
+    await fetch(`${base5}/api/jobs/${id}/reprocessar-erros`, { method: 'POST' })
+    expect((await banco5.linhasDoJob(id))[0]?.status).toBe('incerto')
+
+    const r = await resolver(l.id, 'liberar_reenvio')
+    expect(await r.json()).toEqual({ ok: true, confirmadas: 0, faltam: 2 })
+    expect((await banco5.linhasDoJob(id))[0]).toMatchObject({ status: 'pendente', tentativas: 0, confirmadas: 0 })
+
+    await fetch(`${base5}/api/jobs/${id}/iniciar`, { method: 'POST' })
+    await esperar(async () => (await statusJob(id)) === 'concluido')
+    expect(site.posts.filter(p => p.numero > 0)).toHaveLength(2)
+    expect((await banco5.linhasDoJob(id))[0]?.status).toBe('ok')
+  })
+
+  it('§2.3: liberar_reenvio é recusado quando o site já mostra as rifas; marcar_ok resolve', async () => {
+    await subir({ proximoNumero: 1129 })
+    const id = await criarJob(base5, textoQtd(1))
+    await fetch(`${base5}/api/jobs/${id}/iniciar`, { method: 'POST' })
+    await esperar(async () => (await statusJob(id)) === 'concluido')
+    const l = (await banco5.linhasDoJob(id))[0]!
+    // Simula a linha ter ficado incerta mesmo com a rifa criada (ex.: medição pós-envio falhou).
+    await banco5.atualizarLinha({ ...l, status: 'incerto', confirmadas: 0 })
+
+    const r1 = await resolver(l.id, 'liberar_reenvio')
+    expect(r1.status).toBe(409)
+    expect((await r1.json()).erro).toMatch(/já mostra 1 rifa/)
+    expect(site.posts).toHaveLength(1)
+
+    expect((await resolver(l.id, 'marcar_ok')).status).toBe(200)
+    expect((await banco5.linhasDoJob(id))[0]?.status).toBe('ok')
+    expect((await resolver(l.id, 'marcar_ok')).status).toBe(409) // não está mais incerta
+    expect((await resolver(l.id, 'apagar')).status).toBe(400)
+  })
+
+  it('§2.3: conferência e resolução recusadas com job rodando', async () => {
+    await subir({ proximoNumero: 1129 })
+    const id = await criarJob(base5, textoQtd(1))
+    const l = (await banco5.linhasDoJob(id))[0]!
+    await banco5.atualizarLinha({ ...l, status: 'incerto', base_cpf: 0, tentativas: 1 })
+    const outro = await criarJob(base5, textoQtd(1))
+    await banco5.tentarIniciarJob(outro, 'outra-instancia')
+    expect((await fetch(`${base5}/api/jobs/${id}/conferencia`)).status).toBe(409)
+    expect((await resolver(l.id, 'liberar_reenvio')).status).toBe(409)
+    expect(site.posts).toHaveLength(0)
+  })
 })
 
 describe('API com PIN', () => {

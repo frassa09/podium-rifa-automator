@@ -1,6 +1,6 @@
 const $ = sel => document.querySelector(sel)
 
-const state = { jobId: null, timer: null, linhas: [] }
+const state = { jobId: null, timer: null, linhas: [], conferencia: {} }
 let pin = sessionStorage.getItem('pin') || ''
 
 function trocarTela(nome) {
@@ -315,11 +315,63 @@ function renderLinhas() {
     const small = document.createElement('small')
     small.textContent = l.status === 'erro' || l.status === 'incerto' ? l.erro : (l.numeros || '')
     corpo.appendChild(small)
+    const conf = state.conferencia[l.id]
+    if (conf) {
+      const c = document.createElement('small')
+      c.className = 'conferencia'
+      c.textContent = conf.desdeBase === null
+        ? `Site: ${conf.site} rifa(s) deste CPF (linha ainda sem base)`
+        : `Site: ${conf.desdeBase} de ${conf.qtd} desde a base · ${conf.tentativas} envio(s) registrado(s)`
+      corpo.appendChild(document.createElement('br'))
+      corpo.appendChild(c)
+    }
     const status = document.createElement('span')
     status.textContent = l.status === 'incerto' ? 'incerto — conferir no site' : l.status
     li.append(dot, corpo, status)
+    if (l.status === 'incerto') li.appendChild(acoesIncerta(l))
     ul.appendChild(li)
   }
+}
+
+function msgErro(e) {
+  try { return JSON.parse(e.message).erro || e.message } catch { return e.message }
+}
+
+function avisoResolver(texto, ok) {
+  const st = $('#resolver-status')
+  st.hidden = false
+  st.className = `status ${ok ? 'ok' : 'erro'}`
+  st.textContent = texto
+}
+
+// Linha incerta: houve envio sem confirmação. Só um humano decide, depois de conferir no site.
+function acoesIncerta(l) {
+  const div = document.createElement('div')
+  div.className = 'acoes'
+  const ok = document.createElement('button')
+  ok.className = 'btn btn-mini'
+  ok.textContent = 'Marcar ok'
+  ok.addEventListener('click', async () => {
+    if (!confirm(`Confirma que ${l.nome} já tem as ${l.qtd} rifa(s) no site? A linha vira ok e nada mais será enviado.`)) return
+    try {
+      await api(`/api/linhas/${l.id}/resolver`, { method: 'POST', body: JSON.stringify({ acao: 'marcar_ok' }) })
+      avisoResolver(`Linha de ${l.nome} marcada como ok.`, true)
+    } catch (e) { avisoResolver(msgErro(e), false) }
+    await refreshJob()
+  })
+  const reenviar = document.createElement('button')
+  reenviar.className = 'btn btn-mini'
+  reenviar.textContent = 'Liberar reenvio'
+  reenviar.addEventListener('click', async () => {
+    if (!confirm(`O servidor vai contar no site as rifas de ${l.nome} e só libera se faltar alguma. Continuar?`)) return
+    try {
+      const r = await api(`/api/linhas/${l.id}/resolver`, { method: 'POST', body: JSON.stringify({ acao: 'liberar_reenvio' }) })
+      avisoResolver(`Liberado: ${r.confirmadas} confirmada(s) no site, faltam ${r.faltam}. Toque em Iniciar para enviar.`, true)
+    } catch (e) { avisoResolver(msgErro(e), false) }
+    await refreshJob()
+  })
+  div.append(ok, reenviar)
+  return div
 }
 
 async function refreshJob() {
@@ -338,6 +390,7 @@ async function refreshJob() {
     b.textContent = d.job.status
     h.appendChild(b)
     h.append(` (criado ${d.job.criado_em})`)
+    if (state.conferenciaDe !== d.job.id) state.conferencia = {}
     state.linhas = d.linhas
     renderLinhas()
     const logs = d.logs.join('\n')
@@ -361,6 +414,20 @@ $('#btn-cancelar').addEventListener('click', async () => {
   if (!state.jobId) return
   await api(`/api/jobs/${state.jobId}/cancelar`, { method: 'POST' })
   setTimeout(refreshJob, 300)
+})
+
+$('#btn-conferir').addEventListener('click', async () => {
+  if (!state.jobId) return
+  const b = $('#btn-conferir')
+  b.disabled = true
+  try {
+    const r = await api(`/api/jobs/${state.jobId}/conferencia`)
+    state.conferencia = Object.fromEntries(r.linhas.map(l => [l.id, l]))
+    state.conferenciaDe = state.jobId
+    avisoResolver('Conferência feita com o site agora.', true)
+    renderLinhas()
+  } catch (e) { avisoResolver(msgErro(e), false) }
+  b.disabled = false
 })
 
 $('#btn-reproc').addEventListener('click', async () => {
