@@ -147,13 +147,20 @@ export class PodiumSession {
         method: 'POST',
         body: new URLSearchParams({ usuario: apenasDigitos(cpf), turma, senha }).toString(),
       }, false)
-      if (!r3.ok && r3.status !== 302) {
-        // login_falhou vem com 200; detecta pelo corpo
-        const corpo = await r3.text()
-        if (corpo.includes('login_falhou')) throw new ErroLogin('credencial', 'Credencial inválida')
+      // Só 302 → main.php é sucesso. Observado no site real (§0): senha errada responde
+      // 302 → index.php?msg=invalido; versões antigas respondiam 200 com "login_falhou".
+      // O PHPSESSID já existe desde o 1º POST, então não prova nada.
+      const location = r3.headers.get('location') ?? ''
+      const corpo = await r3.text()
+      if (r3.status !== 302 || !/main\.php/i.test(location)) {
+        const motivo = /msg=([\w-]+)/.exec(location)?.[1] ?? (corpo.includes('login_falhou') ? 'login_falhou' : `HTTP ${r3.status}`)
+        throw new ErroLogin('credencial', `Credencial inválida (${motivo})`)
       }
-      if (!s.cookieHead.includes('PHPSESSID')) {
-        throw new ErroLogin('credencial', 'Credencial inválida (sem sessão)')
+      // Exige o formulário autenticado com a tabela legível antes de declarar a sessão pronta.
+      try {
+        await s.lerRifas()
+      } catch (e) {
+        throw new ErroLogin('rede', `Login aceito, mas a página de rifas não abriu: ${(e as Error).message}`)
       }
       return s
     } catch (e) {

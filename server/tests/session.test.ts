@@ -30,6 +30,13 @@ beforeAll(async () => {
         return
       }
       if (u.pathname === '/autenticacao.php') {
+        if (body.join('').includes('invalida')) {
+          // Comportamento real observado em 2026-10-07 (§0)
+          res.statusCode = 302
+          res.setHeader('Location', 'index.php?msg=invalido')
+          res.end()
+          return
+        }
         if (body.join('').includes('errada')) {
           res.statusCode = 200
           res.end('login_falhou')
@@ -80,8 +87,14 @@ describe('PodiumSession.login', () => {
     expect(s.cookieHead).toContain('PHPSESSID=abc123')
   })
 
-  it('lança ErroLogin quando credencial errada', async () => {
+  it('lança ErroLogin quando credencial errada (200 login_falhou)', async () => {
     await expect(PodiumSession.login('86730169087', 'errada', { baseUrl: base })).rejects.toBeInstanceOf(ErroLogin)
+  })
+
+  it('senha errada do site real (302 → index.php?msg=invalido) é credencial inválida, não sucesso', async () => {
+    const e = await PodiumSession.login('86730169087', 'invalida', { baseUrl: base }).catch(x => x as ErroLogin)
+    expect(e).toBeInstanceOf(ErroLogin)
+    expect(e).toMatchObject({ motivo: 'credencial', message: expect.stringContaining('invalido') })
   })
 })
 
