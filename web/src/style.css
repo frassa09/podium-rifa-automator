@@ -50,6 +50,9 @@ body {
 .tab[aria-selected='true'] { color: #fff; border-color: var(--accent); }
 
 main { padding: 16px; max-width: 640px; margin: 0 auto; }
+/* Sem isto, `display` das classes vence o atributo `hidden` e todas as telas aparecem juntas. */
+[hidden] { display: none !important; }
+
 .tela { display: flex; flex-direction: column; gap: 14px; }
 
 .card {

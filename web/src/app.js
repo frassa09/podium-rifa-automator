@@ -3,14 +3,58 @@ const $ = sel => document.querySelector(sel)
 const state = { jobId: null, timer: null, linhas: [] }
 let pin = sessionStorage.getItem('pin') || ''
 
+const TELAS = ['config', 'manual', 'importar', 'progresso', 'historico']
+
+// A tela atual (e o job aberto) ficam na URL (#/job/12, #/historico…): recarregar volta ao mesmo lugar.
 function trocarTela(nome) {
   document.querySelectorAll('.tela').forEach(t => (t.hidden = true))
   $(`#tela-${nome}`).hidden = false
   document.querySelectorAll('.tab').forEach(t => {
     t.setAttribute('aria-selected', t.dataset.tela === nome ? 'true' : 'false')
   })
-  if (nome === 'progresso') refreshJob()
+  if (nome !== 'pin') {
+    const hash = nome === 'progresso' && state.jobId ? `#/job/${state.jobId}` : `#/${nome}`
+    if (location.hash !== hash) history.replaceState(null, '', hash)
+  }
+  if (nome === 'progresso') {
+    if (state.jobId) refreshJob()
+    else abrirJobRecente()
+  }
   if (nome === 'historico') refreshHistorico()
+}
+
+function abrirJob(id) {
+  state.jobId = Number(id)
+  state.linhas = []
+  trocarTela('progresso')
+}
+
+// Sem job escolhido: abre o que está rodando ou o mais recente não concluído.
+async function abrirJobRecente() {
+  try {
+    const jobs = await api('/api/jobs')
+    const alvo = jobs.find(j => j.status === 'rodando') ?? jobs.find(j => j.status !== 'concluido') ?? jobs[0]
+    if (alvo) {
+      abrirJob(alvo.id)
+      return true
+    }
+    $('#job-header').textContent = 'Nenhum job criado ainda. Crie um nas abas Manual ou Importar.'
+  } catch {}
+  return false
+}
+
+async function restaurarTela(config) {
+  const job = /^#\/job\/(\d+)$/.exec(location.hash)
+  if (job) return abrirJob(job[1])
+  const tela = /^#\/(\w+)$/.exec(location.hash)?.[1]
+  if (tela && TELAS.includes(tela)) return trocarTela(tela)
+  // Sem rota: se há job em andamento, mostra ele; senão a tela de cadastro.
+  try {
+    const jobs = await api('/api/jobs')
+    const aberto = jobs.find(j => j.status === 'rodando') ?? jobs.find(j => j.status !== 'concluido')
+    if (aberto) return abrirJob(aberto.id)
+  } catch {}
+  trocarTela(config?.configurado ? 'manual' : 'config')
 }
 
 document.querySelectorAll('.tab').forEach(t =>
@@ -56,19 +100,23 @@ async function refreshLoginBadge() {
 }
 
 async function initBoot() {
+  let c
   try {
-    const c = await api('/api/config')
-    $('#m-qtd').max = c.maxQuantidade ?? 100
-    if (c.viaAmbiente) {
-      $('#env-aviso').hidden = false
-      $('#form-config').hidden = true
-      $('#env-limite').textContent = `Limite por pessoa: ${c.maxQuantidade ?? 100} rifas.`
-    } else {
-      $('#env-aviso').hidden = true
-      $('#form-config').hidden = false
-    }
-  } catch {}
+    c = await api('/api/config')
+  } catch {
+    return // 401: a tela de PIN já foi aberta; o boot roda de novo após o PIN
+  }
+  $('#m-qtd').max = c.maxQuantidade ?? 100
+  if (c.viaAmbiente) {
+    $('#env-aviso').hidden = false
+    $('#form-config').hidden = true
+    $('#env-limite').textContent = `Limite por pessoa: ${c.maxQuantidade ?? 100} rifas.`
+  } else {
+    $('#env-aviso').hidden = true
+    $('#form-config').hidden = false
+  }
   refreshLoginBadge()
+  await restaurarTela(c)
 }
 initBoot()
 
@@ -87,8 +135,7 @@ $('#btn-pin').addEventListener('click', async () => {
     sessionStorage.setItem('pin', valor)
     $('#pin').value = ''
     $('#pin-status').textContent = ''
-    trocarTela('manual')
-    refreshLoginBadge()
+    initBoot()
   } else {
     st.className = 'status erro'
     st.textContent = r.status === 429 ? (await r.json()).erro : 'PIN inválido.'
@@ -125,7 +172,13 @@ $('#form-config').addEventListener('submit', async e => {
 })
 
 // ————— Manual —————
+// Rascunho da lista manual sobrevive a recarregar a página (só neste navegador).
 let manual = []
+try { manual = JSON.parse(localStorage.getItem('rascunhoManual') || '[]') } catch {}
+function salvarRascunho() {
+  try { localStorage.setItem('rascunhoManual', JSON.stringify(manual)) } catch {}
+}
+if (manual.length) renderManual()
 const $m = id => $(id).value
 
 function maskCPF(v) {
@@ -165,6 +218,7 @@ function validarManual() {
 }
 
 function renderManual() {
+  salvarRascunho()
   const ul = $('#m-lista')
   ul.textContent = ''
   let total = 0
@@ -232,12 +286,11 @@ $('#btn-criar').addEventListener('click', async () => {
   btn.disabled = true
   try {
     const r = await postJob({ pessoas: manual })
-    state.jobId = r.jobId
     st.className = 'status ok'
     st.textContent = `Job #${r.jobId} criado — nenhuma rifa foi enviada. Inicie em Progresso.`
     manual = []
     renderManual()
-    setTimeout(() => trocarTela('progresso'), 500)
+    setTimeout(() => abrirJob(r.jobId), 500)
   } catch (err) {
     let msg = err.message
     try { const j = JSON.parse(err.message.substring(err.message.indexOf('{')))
@@ -263,7 +316,11 @@ async function postJob(body) {
       `ATENÇÃO: estas pessoas já têm rifas NÃO concluídas em outro job:\n\n${nomes}\n\n` +
       'Criar outro job para elas pode DUPLICAR rifas. Confira no site da Podium antes.\n\nCriar mesmo assim?'
     )
-    if (!ok) throw new Error('{"erro":"Cancelado: pessoa(s) já em outro job"}')
+    if (!ok) {
+      const jobIds = [...new Set(j.conflitos.map(c => c.job_id))]
+      if (confirm(`Abrir o job #${jobIds[0]} para ver o andamento dessa pessoa?`)) abrirJob(jobIds[0])
+      throw new Error('{"erro":"Cancelado: pessoa(s) já em outro job"}')
+    }
     body.forcar = true
     return api('/api/jobs', { method: 'POST', body: JSON.stringify(body) })
   }
@@ -305,10 +362,9 @@ $('#btn-importar').addEventListener('click', async () => {
     }
     st.textContent = 'Criando…'
     const r = await api('/api/jobs', { method: 'POST', body: JSON.stringify({ ...body, forcar: previa.forcar === true }) })
-    state.jobId = r.jobId
     st.className = 'status ok'
     st.textContent = `Job #${r.jobId} criado. Vá em Progresso.`
-    trocarTela('progresso')
+    abrirJob(r.jobId)
   } catch (err) {
     let msg = err.message
     let invalidas = []
@@ -433,8 +489,7 @@ async function refreshHistorico() {
       abrir.className = 'btn btn-mini'
       abrir.textContent = 'Abrir'
       abrir.addEventListener('click', () => {
-        state.jobId = j.id
-        trocarTela('progresso')
+        abrirJob(j.id)
       })
       const reproc = document.createElement('button')
       reproc.className = 'btn btn-mini'
@@ -455,8 +510,5 @@ setInterval(() => {
   if (!$('#tela-progresso').hidden && state.jobId) refreshJob()
 }, 1500)
 
-// Cache de jobId no hash para sobreviver reload
-window.addEventListener('hashchange', () => {
-  const m = /#\/job\/(\d+)/.exec(location.hash)
-  if (m) { state.jobId = Number(m[1]); trocarTela('progresso') }
-})
+// Voltar/avançar do navegador ou link colado com #/job/N.
+window.addEventListener('hashchange', () => restaurarTela())
