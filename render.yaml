@@ -3,6 +3,8 @@ services:
     name: podium-rifa-automator
     runtime: node
     plan: free
+    # Mais perto do Brasil entre as regiões do Render; crie o Neon em AWS us-east-1 (N. Virginia).
+    region: virginia
     buildCommand: npm ci && npm run build
     startCommand: npm run start
     healthCheckPath: /api/health

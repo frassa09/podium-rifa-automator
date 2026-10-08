@@ -6,12 +6,25 @@ import { abrirBanco, type Banco } from '../data/abrirBanco.ts'
 import { Automator } from '../engine/automator.ts'
 import { PodiumSession } from '../podium/session.ts'
 import { pinValido } from '../utils/pin.ts'
+import { criarLimitador, type Limitador } from '../utils/limitador.ts'
 import { parseLinhas, validarPessoa, type LinhaParseada } from '../utils/tableParser.ts'
 import { apenasDigitos } from '../utils/cpf.ts'
 import type { Config, Pessoa } from '../types.ts'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const WEB_DIR = join(__dirname, '..', '..', '..', 'web', 'src')
+
+// Express 4 não captura rejeição de handler async: sem isto, uma queda do banco
+// derrubaria o processo inteiro.
+function rota(fn: (req: express.Request, res: express.Response) => Promise<void>): express.RequestHandler {
+  return (req, res, next) => {
+    fn(req, res).catch(next)
+  }
+}
+
+function falhaGravacao(e: unknown): void {
+  console.error('[rifa] Falha ao gravar no banco:', (e as Error).message)
+}
 
 interface Runner {
   parar: () => void
@@ -41,7 +54,24 @@ export interface StartOpts {
   envConfig?: Config | null
   maxQuantidade?: number
   login?: (cpf: string, senha: string) => Promise<PodiumSession>
+  // Atrás do proxy HTTPS do Render: IP real do cliente vem de X-Forwarded-For.
+  trustProxy?: boolean
+  limitadorPin?: Limitador
 }
+
+// Frontend não usa script/estilo inline nem recursos externos: CSP pode ser estrita.
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self'",
+  "img-src 'self' data:",
+  "connect-src 'self'",
+  "manifest-src 'self'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+].join('; ')
 
 export async function startServer(opts: StartOpts = {}): Promise<{
   app: express.Express
@@ -58,30 +88,54 @@ export async function startServer(opts: StartOpts = {}): Promise<{
   // Retomada re-mede o site e cria apenas o que falta.
   await banco.reconciliarBoot()
 
+  const trustProxy = opts.trustProxy ?? process.env.RENDER === 'true'
+  const limitador = opts.limitadorPin ?? criarLimitador()
+
   const app = express()
-  app.use(express.json({ limit: '50mb' }))
-  app.use(express.static(WEB_DIR))
+  app.disable('x-powered-by')
+  if (trustProxy) app.set('trust proxy', 1)
+
   app.use((req, res, next) => {
-    res.setHeader('X-Powered-By', 'rifa-automator')
+    res.setHeader('Content-Security-Policy', CSP)
+    res.setHeader('X-Content-Type-Options', 'nosniff')
+    res.setHeader('X-Frame-Options', 'DENY')
+    res.setHeader('Referrer-Policy', 'no-referrer')
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()')
+    if (trustProxy) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
+    if (req.path.startsWith('/api/')) res.setHeader('Cache-Control', 'no-store')
     next()
   })
+  app.use(express.static(WEB_DIR))
 
+  // PIN é checado antes de ler o corpo: sem PIN, nenhum upload grande é processado.
   if (pin) {
     app.use((req, res, next) => {
       if (req.path === '/api/health') {
         next()
         return
       }
+      const ip = req.ip ?? 'desconhecido'
+      const restante = limitador.bloqueado(ip)
+      if (restante > 0) {
+        res.setHeader('Retry-After', String(Math.ceil(restante / 1000)))
+        res.status(429).json({ ok: false, erro: `Muitas tentativas de PIN. Tente de novo em ${Math.ceil(restante / 60_000)} min.` })
+        return
+      }
       const recebido = req.header('X-PIN')
       if (!recebido || !pinValido(recebido, pin)) {
+        // Requisição sem PIN (ex.: primeira carga) não conta como tentativa.
+        if (recebido) limitador.falhou(ip)
         res.status(401).json({ ok: false, erro: 'PIN inválido' })
         return
       }
+      limitador.acertou(ip)
       next()
     })
   } else {
     console.log('[rifa] Aviso: RIFA_PIN ausente — autenticação desligada (modo LAN).')
   }
+
+  app.use(express.json({ limit: '15mb' }))
 
   const runners = new Map<number, Runner>()
 
@@ -93,7 +147,7 @@ export async function startServer(opts: StartOpts = {}): Promise<{
     res.json({ ok: true })
   })
 
-  app.get('/api/config', async (_req, res) => {
+  app.get('/api/config', rota(async (_req, res) => {
     const c = await configAtual()
     if (!c) {
       res.json({ configurado: false, maxQuantidade })
@@ -106,9 +160,9 @@ export async function startServer(opts: StartOpts = {}): Promise<{
       viaAmbiente: envConfig !== null,
       maxQuantidade,
     })
-  })
+  }))
 
-  app.post('/api/config', async (req, res) => {
+  app.post('/api/config', rota(async (req, res) => {
     if (envConfig) {
       res.status(409).json({ ok: false, erro: 'Credenciais definidas via ambiente (RIFA_CPF/RIFA_SENHA) — altere as variáveis do serviço.' })
       return
@@ -121,9 +175,9 @@ export async function startServer(opts: StartOpts = {}): Promise<{
     const atual = (await banco.lerConfig()) ?? ({ cpf: '', senha: '', turma: '' } as Config)
     await banco.gravarConfig({ cpf, senha, turma: turma ?? atual.turma })
     res.json({ configurado: true })
-  })
+  }))
 
-  app.post('/api/test-login', async (req, res) => {
+  app.post('/api/test-login', rota(async (req, res) => {
     const atual = await configAtual()
     const cpf = (req.body?.cpf as string) ?? atual?.cpf
     const senha = (req.body?.senha as string) ?? atual?.senha
@@ -137,9 +191,9 @@ export async function startServer(opts: StartOpts = {}): Promise<{
     } catch (e) {
       res.json({ ok: false, erro: (e as Error).message })
     }
-  })
+  }))
 
-  app.post('/api/jobs', async (req, res) => {
+  app.post('/api/jobs', rota(async (req, res) => {
     try {
       const { arquivo, texto, nomeArquivo, pessoas, semCriar } = req.body as {
         arquivo?: string
@@ -189,13 +243,13 @@ export async function startServer(opts: StartOpts = {}): Promise<{
     } catch (e) {
       res.status(400).json({ ok: false, erro: (e as Error).message })
     }
-  })
+  }))
 
-  app.get('/api/jobs', async (_req, res) => {
+  app.get('/api/jobs', rota(async (_req, res) => {
     res.json(await banco.listarJobs())
-  })
+  }))
 
-  app.get('/api/jobs/:id', async (req, res) => {
+  app.get('/api/jobs/:id', rota(async (req, res) => {
     const id = Number(req.params.id)
     const job = (await banco.listarJobs()).find(j => j.id === id)
     if (!job) {
@@ -208,7 +262,7 @@ export async function startServer(opts: StartOpts = {}): Promise<{
       resumo: await banco.resumoJob(id),
       logs: await banco.logs(id, 100),
     })
-  })
+  }))
 
   async function rodarJob(jobId: number): Promise<void> {
     const config = await configAtual()
@@ -235,26 +289,27 @@ export async function startServer(opts: StartOpts = {}): Promise<{
         },
         lerMaiorNumero: async s => (s as PodiumSession).lerMaiorNumero(),
         log: (msg, nivel) => {
-          void banco.registrarLog(msg, nivel ?? 'info', jobId)
+          banco.registrarLog(msg, nivel ?? 'info', jobId).catch(falhaGravacao)
         },
         deveParar: () => deveParar,
         onProgress: l => {
-          void banco.atualizarLinha(l)
+          banco.atualizarLinha(l).catch(falhaGravacao)
         },
       })
       await automator.start(await banco.linhasDoJob(jobId), l => {
-        void banco.atualizarLinha(l)
+        banco.atualizarLinha(l).catch(falhaGravacao)
       })
       await banco.atualizarStatusJob(jobId, deveParar ? 'pendente' : 'concluido')
     } catch (e) {
-      await banco.registrarLog(`Erro ao rodar job #${jobId}: ${(e as Error).message}`, 'error', jobId)
-      await banco.atualizarStatusJob(jobId, 'pendente')
+      // Se o banco também falhar aqui, o job fica 'rodando' até o próximo boot (reconciliado).
+      await banco.registrarLog(`Erro ao rodar job #${jobId}: ${(e as Error).message}`, 'error', jobId).catch(falhaGravacao)
+      await banco.atualizarStatusJob(jobId, 'pendente').catch(falhaGravacao)
     } finally {
       runners.delete(jobId)
     }
   }
 
-  app.post('/api/jobs/:id/iniciar', async (req, res) => {
+  app.post('/api/jobs/:id/iniciar', rota(async (req, res) => {
     const id = Number(req.params.id)
     const config = await configAtual()
     if (!config) {
@@ -276,23 +331,35 @@ export async function startServer(opts: StartOpts = {}): Promise<{
       return
     }
     await banco.registrarLog(`Iniciando job #${id}`, 'info', id)
-    void rodarJob(id)
+    rodarJob(id).catch(falhaGravacao)
     res.json({ ok: true })
-  })
+  }))
 
-  app.post('/api/jobs/:id/cancelar', async (req, res) => {
+  app.post('/api/jobs/:id/cancelar', rota(async (req, res) => {
     const id = Number(req.params.id)
     runners.get(id)?.parar()
     await banco.cancelarJob(id)
     await banco.registrarLog('Cancelamento solicitado', 'warn', id)
     res.json({ ok: true })
-  })
+  }))
 
-  app.post('/api/jobs/:id/reprocessar-erros', async (req, res) => {
+  app.post('/api/jobs/:id/reprocessar-erros', rota(async (req, res) => {
     const id = Number(req.params.id)
     await banco.reprocessarErros(id)
     await banco.registrarLog('Reprocessando erros', 'info', id)
     res.json({ ok: true })
+  }))
+
+  // Express só reconhece handler de erro com 4 parâmetros, mesmo que `next` não seja usado.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    const e = err as { status?: number; type?: string; message?: string }
+    if (e.type === 'entity.too.large') {
+      res.status(413).json({ ok: false, erro: 'Arquivo grande demais (máx. ~10 MB).' })
+      return
+    }
+    console.error('[rifa] Erro na API:', e.message ?? err)
+    res.status(e.status && e.status < 500 ? e.status : 500).json({ ok: false, erro: 'Erro interno. Tente de novo em instantes.' })
   })
 
   const server = createServer(app)

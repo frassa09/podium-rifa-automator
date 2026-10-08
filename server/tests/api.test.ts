@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import type { AddressInfo } from 'node:net'
 import { startServer } from '../src/api/server.ts'
 import { SqliteBanco } from '../src/data/sqliteBanco.ts'
+import { criarLimitador } from '../src/utils/limitador.ts'
 import type { PodiumSession } from '../src/podium/session.ts'
 import type { Pessoa } from '../src/types.ts'
 
@@ -230,6 +231,52 @@ describe('API com PIN', () => {
     const ok = await fetch(`${base2}/api/config`, { headers: { 'X-PIN': '1234' } })
     expect(ok.status).toBe(200)
     expect((await ok.json()).configurado).toBe(false)
+  })
+
+  it('envia cabeçalhos de segurança e no-store na API', async () => {
+    const r = await fetch(`${base2}/api/health`)
+    expect(r.headers.get('content-security-policy')).toContain("default-src 'self'")
+    expect(r.headers.get('x-frame-options')).toBe('DENY')
+    expect(r.headers.get('cache-control')).toBe('no-store')
+    expect(r.headers.get('x-powered-by')).toBeNull()
+  })
+
+  it('corpo grande sem PIN é recusado antes de ser lido', async () => {
+    const r = await fetch(`${base2}/api/jobs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ texto: 'x'.repeat(20 * 1024 * 1024) }),
+    })
+    expect(r.status).toBe(401)
+  })
+})
+
+describe('API com PIN — trava anti força-bruta', () => {
+  let srv4: ReturnType<typeof Object>
+  let base4: string
+  let dir4: string
+
+  beforeAll(async () => {
+    dir4 = mkdtempSync(join(tmpdir(), 'rifa-trava-'))
+    const banco4 = SqliteBanco.abrir(join(dir4, 'test.db'))
+    srv4 = await startServer({ port: 0, db: banco4, pin: '73915482', limitadorPin: criarLimitador({ maxFalhas: 2 }) })
+    base4 = `http://127.0.0.1:${(srv4.server.address() as AddressInfo).port}`
+  })
+
+  afterAll(() => {
+    srv4.server.close()
+    rmSync(dir4, { recursive: true, force: true })
+  })
+
+  it('bloqueia o IP após falhas seguidas, inclusive com o PIN certo', async () => {
+    const tentar = (p: string) => fetch(`${base4}/api/config`, { headers: { 'X-PIN': p } })
+    expect((await fetch(`${base4}/api/config`)).status).toBe(401) // sem PIN não conta
+    expect((await tentar('errado1')).status).toBe(401)
+    expect((await tentar('errado2')).status).toBe(401)
+    const bloqueado = await tentar('73915482')
+    expect(bloqueado.status).toBe(429)
+    expect(Number(bloqueado.headers.get('retry-after'))).toBeGreaterThan(0)
+    expect((await fetch(`${base4}/api/health`)).status).toBe(200)
   })
 })
 

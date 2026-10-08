@@ -1,4 +1,4 @@
-import { Client } from 'pg'
+import pg from 'pg'
 import { Banco, type QueryExecutor } from './banco.ts'
 
 const DDL =
@@ -41,66 +41,107 @@ export function traduzirMarcadores(sql: string): string {
   return sql.replace(/\?/g, () => `$${++n}`)
 }
 
+export interface ConexaoPg {
+  query(sql: string, params?: unknown[]): Promise<{ rows: unknown[]; rowCount: number | null }>
+  release(destruir?: boolean): void
+}
+
+export interface PoolPg {
+  connect(): Promise<ConexaoPg>
+  end(): Promise<void>
+}
+
+const espera = (ms: number) => new Promise(r => setTimeout(r, ms))
+
+// Usa um Pool (não um Client fixo): o Neon free suspende o compute quando ocioso e
+// derruba conexões; o pool descarta a conexão morta e abre outra na próxima operação.
 export class PostgresExecutor implements QueryExecutor {
   private fila: Promise<unknown> = Promise.resolve()
   private profundidade = 0
+  private atual: ConexaoPg | null = null
 
-  constructor(private cliente: Client) {}
+  constructor(
+    private pool: PoolPg,
+    private tentativasConexao = 3,
+    private esperaMs = 1_000,
+  ) {}
 
-  // Serialeza toda operação num único Client: transações não sofrem interleaving.
-  // Chamadas reentrantes (dentro de transacao) rodam direto, sem deadlock.
-  private emFila<T>(fn: () => Promise<T>): Promise<T> {
-    if (this.profundidade > 0) return fn()
-    const p = this.fila.then(() => this.comContador(fn), () => this.comContador(fn))
+  // Serializa toda operação numa conexão por vez: transações não sofrem interleaving.
+  // Chamadas reentrantes (dentro de transacao) reutilizam a mesma conexão, sem deadlock.
+  private emFila<T>(fn: (c: ConexaoPg) => Promise<T>): Promise<T> {
+    if (this.profundidade > 0 && this.atual) return fn(this.atual)
+    const p = this.fila.then(() => this.comConexao(fn), () => this.comConexao(fn))
     this.fila = p.then(() => undefined, () => undefined)
     return p
   }
 
-  private async comContador<T>(fn: () => Promise<T>): Promise<T> {
+  // Só a obtenção da conexão é re-tentada (cold start do Neon); a query nunca é
+  // repetida, pois não dá para saber se ela chegou a ser aplicada.
+  private async conectar(): Promise<ConexaoPg> {
+    for (let i = 1; ; i++) {
+      try {
+        return await this.pool.connect()
+      } catch (e) {
+        if (i >= this.tentativasConexao) throw e
+        await espera(this.esperaMs * i)
+      }
+    }
+  }
+
+  private async comConexao<T>(fn: (c: ConexaoPg) => Promise<T>): Promise<T> {
+    const c = await this.conectar()
+    this.atual = c
     this.profundidade++
+    let falhou = false
     try {
-      return await fn()
+      return await fn(c)
+    } catch (e) {
+      falhou = true
+      throw e
     } finally {
       this.profundidade--
+      this.atual = null
+      // Conexão que deu erro é descartada: pode estar quebrada.
+      c.release(falhou)
     }
   }
 
   rows<T = unknown>(sql: string, params: readonly unknown[] = []): Promise<T[]> {
-    return this.emFila(async () => {
-      const r = await this.cliente.query(traduzirMarcadores(sql), params as never[])
+    return this.emFila(async c => {
+      const r = await c.query(traduzirMarcadores(sql), params as unknown[])
       return r.rows as T[]
     })
   }
 
   changes(sql: string, params: readonly unknown[] = []): Promise<number> {
-    return this.emFila(async () => {
-      const r = await this.cliente.query(traduzirMarcadores(sql), params as never[])
+    return this.emFila(async c => {
+      const r = await c.query(traduzirMarcadores(sql), params as unknown[])
       return r.rowCount ?? 0
     })
   }
 
   exec(sql: string): Promise<void> {
-    return this.emFila(async () => {
-      await this.cliente.query(sql)
+    return this.emFila(async c => {
+      await c.query(sql)
     })
   }
 
   transacao<T>(fn: () => Promise<T>): Promise<T> {
-    return this.emFila(async () => {
-      await this.cliente.query('BEGIN')
+    return this.emFila(async c => {
+      await c.query('BEGIN')
       try {
         const r = await fn()
-        await this.cliente.query('COMMIT')
+        await c.query('COMMIT')
         return r
       } catch (e) {
-        await this.cliente.query('ROLLBACK').catch(() => undefined)
+        await c.query('ROLLBACK').catch(() => undefined)
         throw e
       }
     })
   }
 
   fechar(): Promise<void> {
-    return this.cliente.end()
+    return this.pool.end()
   }
 }
 
@@ -112,9 +153,15 @@ export class PostgresBanco extends Banco {
   }
 
   static async abrir(url: string): Promise<PostgresBanco> {
-    const cliente = new Client({ connectionString: url })
-    await cliente.connect()
-    const banco = new PostgresBanco(new PostgresExecutor(cliente))
+    const pool = new pg.Pool({
+      connectionString: url,
+      max: 2,
+      idleTimeoutMillis: 30_000,
+      connectionTimeoutMillis: 15_000,
+    })
+    // Sem este handler, uma conexão ociosa derrubada pelo Neon emite 'error' e mata o processo.
+    pool.on('error', e => console.error('[rifa] Conexão Postgres ociosa caiu (será reaberta):', e.message))
+    const banco = new PostgresBanco(new PostgresExecutor(pool as unknown as PoolPg))
     await banco.migrar()
     return banco
   }

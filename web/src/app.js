@@ -25,8 +25,9 @@ async function api(path, opts = {}) {
     },
     ...opts,
   })
-  if (r.status === 401) {
+  if (r.status === 401 || r.status === 429) {
     trocarTela('pin')
+    if (r.status === 429) $('#pin-status').textContent = (await r.json()).erro
     throw new Error('PIN necessário')
   }
   if (!r.ok) throw new Error(await r.text())
@@ -90,7 +91,7 @@ $('#btn-pin').addEventListener('click', async () => {
     refreshLoginBadge()
   } else {
     st.className = 'status erro'
-    st.textContent = 'PIN inválido.'
+    st.textContent = r.status === 429 ? (await r.json()).erro : 'PIN inválido.'
   }
 })
 
