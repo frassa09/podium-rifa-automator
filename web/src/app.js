@@ -231,7 +231,7 @@ $('#btn-criar').addEventListener('click', async () => {
   st.textContent = 'Criando…'
   btn.disabled = true
   try {
-    const r = await api('/api/jobs', { method: 'POST', body: JSON.stringify({ pessoas: manual }) })
+    const r = await postJob({ pessoas: manual })
     state.jobId = r.jobId
     st.className = 'status ok'
     st.textContent = `Job #${r.jobId} criado — nenhuma rifa foi enviada. Inicie em Progresso.`
@@ -249,8 +249,39 @@ $('#btn-criar').addEventListener('click', async () => {
   }
 })
 
+// Cria (ou pré-visualiza) job. Se o servidor avisar que a pessoa já tem linha em aberto em
+// outro job, exige confirmação explícita — criar de novo pode duplicar rifas.
+async function postJob(body) {
+  try {
+    return await api('/api/jobs', { method: 'POST', body: JSON.stringify(body) })
+  } catch (err) {
+    let j = null
+    try { j = JSON.parse(err.message.substring(err.message.indexOf('{'))) } catch {}
+    if (!j?.conflitos?.length) throw err
+    const nomes = [...new Set(j.conflitos.map(c => `• ${c.nome} (job #${c.job_id})`))].join('\n')
+    const ok = confirm(
+      `ATENÇÃO: estas pessoas já têm rifas NÃO concluídas em outro job:\n\n${nomes}\n\n` +
+      'Criar outro job para elas pode DUPLICAR rifas. Confira no site da Podium antes.\n\nCriar mesmo assim?'
+    )
+    if (!ok) throw new Error('{"erro":"Cancelado: pessoa(s) já em outro job"}')
+    body.forcar = true
+    return api('/api/jobs', { method: 'POST', body: JSON.stringify(body) })
+  }
+}
+
+function base64DeBytes(buf) {
+  const bytes = new Uint8Array(buf)
+  let bin = ''
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000))
+  }
+  return btoa(bin)
+}
+
 // ————— Importar —————
 $('#btn-importar').addEventListener('click', async () => {
+  const btn = $('#btn-importar')
+  if (btn.disabled) return
   const st = $('#import-status')
   st.className = 'status'
   st.textContent = 'Validando…'
@@ -259,21 +290,21 @@ $('#btn-importar').addEventListener('click', async () => {
   const arq = $('#arq').files[0]
   let body
   if (arq) {
-    const buf = await arq.arrayBuffer()
-    const base64 = btoa(String.fromCharCode(...new Uint8Array(buf)))
-    body = { arquivo: base64, nomeArquivo: arq.name }
+    body = { arquivo: base64DeBytes(await arq.arrayBuffer()), nomeArquivo: arq.name }
   } else {
     body = { texto: $('#colar').value }
   }
+  btn.disabled = true
   try {
-    const prev = await api('/api/jobs', { method: 'POST', body: JSON.stringify({ ...body, semCriar: true }) })
+    const previa = { ...body, semCriar: true }
+    const prev = await postJob(previa)
     if (!prev.preview) throw new Error('resposta inesperada')
     if (!confirm(`Serão criadas ${prev.totalRifas} rifa(s) de ${prev.linhas} pessoa(s). Confirmar importação?`)) {
       st.textContent = ''
       return
     }
     st.textContent = 'Criando…'
-    const r = await api('/api/jobs', { method: 'POST', body: JSON.stringify(body) })
+    const r = await api('/api/jobs', { method: 'POST', body: JSON.stringify({ ...body, forcar: previa.forcar === true }) })
     state.jobId = r.jobId
     st.className = 'status ok'
     st.textContent = `Job #${r.jobId} criado. Vá em Progresso.`
@@ -282,7 +313,8 @@ $('#btn-importar').addEventListener('click', async () => {
     let msg = err.message
     let invalidas = []
     try { const j = JSON.parse(err.message.substring(err.message.indexOf('{')))
-      invalidas = j.invalidas || [] } catch {}
+      invalidas = j.invalidas || []
+      msg = j.erro ?? msg } catch {}
     st.className = 'status erro'
     st.textContent = invalidas.length ? `${invalidas.length} linha(s) inválida(s)` : msg
     if (invalidas.length) {
@@ -299,6 +331,8 @@ $('#btn-importar').addEventListener('click', async () => {
       }
       avisos.appendChild(ul)
     }
+  } finally {
+    btn.disabled = false
   }
 })
 
@@ -314,7 +348,8 @@ function renderLinhas() {
     corpo.textContent = l.nome
     corpo.appendChild(document.createElement('br'))
     const small = document.createElement('small')
-    small.textContent = l.status === 'erro' ? l.erro : (l.numeros || '')
+    const conf = `${l.confirmadas ?? 0}/${l.qtd} confirmada(s)${l.numeros ? ' · Nº ' + l.numeros : ''}`
+    small.textContent = l.status === 'erro' ? `${conf} — ${l.erro}` : conf
     corpo.appendChild(small)
     const status = document.createElement('span')
     status.textContent = l.status
@@ -339,6 +374,7 @@ async function refreshJob() {
     h.appendChild(b)
     h.append(` (criado ${d.job.criado_em})`)
     state.linhas = d.linhas
+    $('#btn-iniciar').disabled = d.job.status === 'rodando'
     renderLinhas()
     const logs = d.logs.join('\n')
     $('#logs').hidden = logs.length === 0
@@ -350,10 +386,15 @@ $('#btn-iniciar').addEventListener('click', async () => {
   if (!state.jobId) return
   const pendentes = state.linhas
     .filter(l => l.status !== 'ok')
-    .reduce((s, l) => s + Math.max(0, l.qtd - l.enviadas), 0)
+    .reduce((s, l) => s + Math.max(0, l.qtd - (l.confirmadas ?? 0)), 0)
   if (!confirm(`Faltam criar ${pendentes} rifa(s). Confirmar início?`)) return
   $('#btn-iniciar').disabled = true
-  await api(`/api/jobs/${state.jobId}/iniciar`, { method: 'POST' })
+  try {
+    await api(`/api/jobs/${state.jobId}/iniciar`, { method: 'POST' })
+  } catch (err) {
+    $('#btn-iniciar').disabled = false
+    alert('Não iniciou: ' + err.message)
+  }
   setTimeout(refreshJob, 300)
 })
 
@@ -363,8 +404,15 @@ $('#btn-cancelar').addEventListener('click', async () => {
   setTimeout(refreshJob, 300)
 })
 
+const AVISO_REPROC =
+  'ANTES de continuar, abra o site da Podium e confira as rifas das linhas com erro.\n\n' +
+  'Reprocessar libera novo envio só do que NÃO aparece confirmado. O app reconta no site antes de enviar, ' +
+  'mas se o site estiver demorando para mostrar uma rifa, ela pode ser criada de novo.\n\n' +
+  'Já conferi no site. Reprocessar?'
+
 $('#btn-reproc').addEventListener('click', async () => {
   if (!state.jobId) return
+  if (!confirm(AVISO_REPROC)) return
   await api(`/api/jobs/${state.jobId}/reprocessar-erros`, { method: 'POST' })
   await refreshJob()
 })
@@ -392,6 +440,7 @@ async function refreshHistorico() {
       reproc.className = 'btn btn-mini'
       reproc.textContent = 'Reprocessar erros'
       reproc.addEventListener('click', async () => {
+        if (!confirm(AVISO_REPROC)) return
         await api(`/api/jobs/${j.id}/reprocessar-erros`, { method: 'POST' })
         await refreshHistorico()
       })

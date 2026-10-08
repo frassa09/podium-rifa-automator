@@ -25,7 +25,9 @@ const DDL =
     erro TEXT,
     numeros TEXT NOT NULL DEFAULT '',
     base INTEGER,
-    enviadas INTEGER NOT NULL DEFAULT 0
+    enviadas INTEGER NOT NULL DEFAULT 0,
+    base_cpf INTEGER,
+    confirmadas INTEGER NOT NULL DEFAULT 0
   );
   CREATE TABLE IF NOT EXISTS logs (
     id BIGSERIAL PRIMARY KEY,
@@ -33,7 +35,9 @@ const DDL =
     nivel TEXT NOT NULL DEFAULT 'info',
     msg TEXT NOT NULL,
     criado_em TEXT NOT NULL DEFAULT (to_char(now(), 'YYYY-MM-DD HH24:MI:SS'))
-  );`
+  );
+  ALTER TABLE job_linhas ADD COLUMN IF NOT EXISTS base_cpf INTEGER;
+  ALTER TABLE job_linhas ADD COLUMN IF NOT EXISTS confirmadas INTEGER NOT NULL DEFAULT 0;`
 
 // Converte marcadores `?` do SQL compartilhado em $1, $2, ... (dialeto PostgreSQL).
 export function traduzirMarcadores(sql: string): string {

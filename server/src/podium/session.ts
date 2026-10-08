@@ -10,38 +10,76 @@ const dispatcher = new Agent({ connect: { rejectUnauthorized: false } })
 
 const TIMEOUT = 30000
 
-const ROTULOS_NUMERO = new Set(['n', 'no', 'num', 'numeros', 'nro', 'numero', 'numero da rifa', 'num da rifa', 'rifa'])
+// O site é PHP em ISO-8859-1. Decodificar como UTF-8 transforma o "º" de "Nº" em "�"
+// e a tabela deixa de ser reconhecida — foi o que fez o motor reenviar rifas.
+const decodificador = new TextDecoder('latin1')
 
-export function parseNumeroMaximo(html: string): number {
+export async function lerTexto(res: Response): Promise<string> {
+  return decodificador.decode(await res.arrayBuffer())
+}
+
+// Corpo application/x-www-form-urlencoded em ISO-8859-1, como o navegador envia nesse site.
+export function codificarFormLatin1(campos: Record<string, string>): string {
+  const cod = (v: string): string => {
+    let out = ''
+    for (const ch of v.normalize('NFC')) {
+      const c = ch.codePointAt(0)!
+      if (c > 0xff) throw new Error(`Caractere "${ch}" não é aceito pelo site (fora de ISO-8859-1)`)
+      if (/[A-Za-z0-9*\-._]/.test(ch)) out += ch
+      else if (ch === ' ') out += '+'
+      else out += '%' + c.toString(16).toUpperCase().padStart(2, '0')
+    }
+    return out
+  }
+  return Object.entries(campos).map(([k, v]) => `${cod(k)}=${cod(v)}`).join('&')
+}
+
+export interface RifaSite {
+  numero: string
+  cpf: string
+}
+
+const textoCelula = (html: string): string =>
+  html
+    .replace(/<span[^>]*display:\s*none[^>]*>[\s\S]*?<\/span>/gi, '')
+    .replace(/<[^>]*>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+const normalizarRotulo = (s: string): string =>
+  s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[º°]/g, 'o').toLowerCase().trim()
+
+// Lê a tabela de rifas da conta. Qualquer desvio do formato conhecido LANÇA erro:
+// nunca devolve lista vazia "por não achar", pois isso faria o motor achar que nada foi criado.
+export function parseRifas(html: string): RifaSite[] {
   if (!/<form[^>]*action=["']?[^"'>]*registrar_rifa\.php/i.test(html)) {
     throw new Error('Página não é o formulário autenticado de rifas (sessão expirada?)')
   }
-  const tabelas = html.match(/<table[\s\S]*?<\/table>/gi) ?? []
-  let maior = 0
-  for (const tabela of tabelas) {
-    const linhas = tabela.match(/<tr[\s\S]*?<\/tr>/gi) ?? []
-    for (let li = 0; li < linhas.length; li++) {
-      const celulas = [...(linhas[li]!.matchAll(/<t(?:h|d)[\s\S]*?<\/t(?:h|d)>/gi))].map(m => m[0]!)
-      for (let ci = 0; ci < celulas.length; ci++) {
-        const rotulo = celulas[ci]!
-          .replace(/<[^>]*>/g, '')
-          .normalize('NFD')
-          .replace(/[\u0300-\u036f]/g, '')
-          .toLowerCase()
-          .replace(/[º°]/g, '')
-          .trim()
-        if (!ROTULOS_NUMERO.has(rotulo)) continue
-        for (let r = li + 1; r < linhas.length; r++) {
-          const celulasCorpo = [...(linhas[r]!.matchAll(/<t(?:h|d)[\s\S]*?<\/t(?:h|d)>/gi))].map(m => m[0]!)
-          const celula = celulasCorpo[ci]
-          if (!celula) continue
-          const num = /(\d+)/.exec(celula.replace(/<[^>]*>/g, '').trim())
-          if (num) maior = Math.max(maior, Number(num[0]))
-        }
-      }
-    }
+  const tabela = /<table[^>]*id=["']imoveis["'][^>]*>([\s\S]*?)<\/table>/i.exec(html)?.[1]
+  if (!tabela) throw new Error('Tabela de rifas (#imoveis) não encontrada na página')
+  const thead = /<thead[^>]*>([\s\S]*?)<\/thead>/i.exec(tabela)?.[1]
+  const tbody = /<tbody[^>]*>([\s\S]*?)<\/tbody>/i.exec(tabela)?.[1]
+  if (thead === undefined || tbody === undefined) throw new Error('Tabela de rifas sem thead/tbody')
+
+  const cab = [...thead.matchAll(/<th[^>]*>([\s\S]*?)<\/th>/gi)].map(m => normalizarRotulo(textoCelula(m[1]!)))
+  const iNum = cab.indexOf('no')
+  const iCpf = cab.indexOf('cpf')
+  if (iNum < 0 || iCpf < 0) throw new Error(`Cabeçalho da tabela de rifas mudou: ${JSON.stringify(cab)}`)
+
+  const rifas: RifaSite[] = []
+  for (const tr of tbody.match(/<tr[^>]*>[\s\S]*?<\/tr>/gi) ?? []) {
+    const tds = [...tr.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)].map(m => textoCelula(m[1]!))
+    // Linha "nenhum registro" do DataTables (célula única com colspan).
+    if (tds.length === 1 && /colspan/i.test(tr)) continue
+    if (tds.length !== cab.length) throw new Error(`Linha da tabela com ${tds.length} colunas (esperado ${cab.length})`)
+    const numero = tds[iNum]!
+    const cpf = apenasDigitos(tds[iCpf]!)
+    if (!/^\d+$/.test(numero)) throw new Error(`Nº inesperado na tabela: "${numero}"`)
+    if (cpf.length !== 11) throw new Error(`CPF inesperado na tabela (Nº ${numero})`)
+    rifas.push({ numero, cpf })
   }
-  return maior
+  return rifas
 }
 
 export class ErroLogin extends Error {
@@ -95,7 +133,7 @@ export class PodiumSession {
     const url = this.baseUrl + path
     const headers = new Headers(init.headers)
     headers.set('User-Agent', UA)
-    if (init.method === 'POST') headers.set('Content-Type', 'application/x-www-form-urlencoded')
+    if (init.method === 'POST' && !headers.has('Content-Type')) headers.set('Content-Type', 'application/x-www-form-urlencoded')
     if (this.cookies.length) headers.set('Cookie', this.cookieHead)
     const res = await globalThis.fetch(url, {
       ...init,
@@ -148,25 +186,30 @@ export class PodiumSession {
   }
 
   async submeterRifa(p: Pessoa): Promise<void> {
-    const body = new URLSearchParams({
-      'campos[nome]': p.nome,
+    const body = codificarFormLatin1({
+      'campos[nome]': p.nome.trim(),
       'campos[cpf]': maskCPF(p.cpf),
       'campos[telefone]': maskPhone(p.telefone),
-      'campos[email]': p.email,
+      'campos[email]': p.email.trim(),
       enviar: 'Enviar',
-    }).toString()
-    await this.req('/registrar_rifa.php', { method: 'POST', body })
+    })
+    const res = await this.req('/registrar_rifa.php', {
+      method: 'POST',
+      body,
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=ISO-8859-1' },
+    })
+    await res.arrayBuffer()
   }
 
-  async lerMaiorNumero(): Promise<number> {
+  async lerRifas(): Promise<RifaSite[]> {
     const res = await this.req('/main.php?conteudo=form_rifa')
-    const html = await res.text()
-    return parseNumeroMaximo(html)
+    if (!res.ok) throw new Error(`Página de rifas respondeu HTTP ${res.status}`)
+    return parseRifas(await lerTexto(res))
   }
 
   async checarSessao(): Promise<boolean> {
     const res = await this.req('/main.php?conteudo=principal')
-    const html = await res.text()
+    const html = await lerTexto(res)
     return html.includes('Logout') || html.includes('form_rifa')
   }
 }

@@ -1,5 +1,5 @@
-// Executar: npx tsx tests/e2e.seco.ts
-// Lê CPF/senha de variáveis de ambiente (nunca commitar credenciais).
+// Teste SECO contra o site real: login + leitura da tabela. NUNCA envia rifa.
+// Executar na raiz: node --env-file=.env --import tsx server/tests/e2e.seco.ts
 import { PodiumSession } from '../src/podium/session.ts'
 
 async function main() {
@@ -11,8 +11,13 @@ async function main() {
   }
   const s = await PodiumSession.login(cpf, senha)
   console.log('Login OK. Turma:', s.turma)
-  console.log('Maior Nº atual:', await s.lerMaiorNumero())
+  const rifas = await s.lerRifas()
+  console.log('Rifas na tabela:', rifas.length, '| último Nº:', rifas.at(-1)?.numero ?? '-')
+  console.log('Compradores distintos:', new Set(rifas.map(r => r.cpf)).size)
   console.log('Sessão válida:', await s.checarSessao())
 }
 
-main().catch(e => { console.error(e); process.exit(1) })
+main().catch(e => {
+  console.error(e)
+  process.exit(1)
+})

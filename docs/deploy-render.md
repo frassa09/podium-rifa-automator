@@ -44,7 +44,21 @@ o servidor não sobe exposto sem PIN nem sem banco persistente.
   **Histórico** reabra e inicie de novo — o motor re-mede o Nº no site e cria só o que falta.
 - Neon free pausa o banco ocioso; a reconexão é automática.
 
-## 5. Segurança — resumo
+## 5. Como o app evita criar rifas a mais
+
+- Cada rifa é confirmada **contando as rifas do CPF na tabela do site** (o Nº não serve: é uma
+  sequência compartilhada com outras contas).
+- **No máximo `qtd` envios por linha, para sempre.** O envio é registrado antes de acontecer.
+- **Nada é reenviado automaticamente.** Se um envio não aparecer na tabela, o job para e a linha
+  mostra *"Confira no site antes de reprocessar"*. Então:
+  1. Abra o site da Podium e veja quantas rifas aquela pessoa tem.
+  2. Se estiver tudo lá: **Reprocessar erros** → **Iniciar**. O app reconta e só marca ok, sem enviar.
+  3. Se faltar: o mesmo. O app reconta e envia só o que falta.
+- Criar outro job para alguém que tem linha em aberto pede confirmação explícita.
+- Linhas criadas pela versão anterior (antes de 2026-10-08) ficam bloqueadas: confira no site e,
+  se faltar algo, crie um job novo só com o que falta.
+
+## 6. Segurança — resumo
 
 - HTTPS do Render + PIN em toda rota de API (exceto `/api/health`), com trava anti força-bruta.
 - Credenciais da Podium só em variáveis de ambiente; a API nunca devolve a senha.

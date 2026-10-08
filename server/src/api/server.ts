@@ -195,20 +195,21 @@ export async function startServer(opts: StartOpts = {}): Promise<{
 
   app.post('/api/jobs', rota(async (req, res) => {
     try {
-      const { arquivo, texto, nomeArquivo, pessoas, semCriar } = req.body as {
+      const { arquivo, texto, nomeArquivo, pessoas, semCriar, forcar } = req.body as {
         arquivo?: string
         texto?: string
         nomeArquivo?: string
         pessoas?: Pessoa[]
         semCriar?: boolean
+        forcar?: boolean
       }
       let parsed: { ok: LinhaParseada[]; invalidas: LinhaParseada[] }
       if (Array.isArray(pessoas)) {
         const norm: Pessoa[] = pessoas.map(p => ({
-          nome: (p?.nome ?? '').trim(),
+          nome: String(p?.nome ?? '').trim().normalize('NFC'),
           cpf: apenasDigitos(String(p?.cpf ?? '')),
           telefone: apenasDigitos(String(p?.telefone ?? '')),
-          email: (p?.email ?? '').trim(),
+          email: String(p?.email ?? '').trim().normalize('NFC'),
           qtd: Math.floor(Number(p?.qtd)),
         }))
         const ok: LinhaParseada[] = []
@@ -231,6 +232,13 @@ export async function startServer(opts: StartOpts = {}): Promise<{
       if (parsed.ok.length === 0) {
         res.status(422).json({ ok: false, invalidas: [], erro: 'Nenhuma linha válida' })
         return
+      }
+      if (forcar !== true) {
+        const conflitos = await banco.linhasEmAbertoDosCpfs([...new Set(parsed.ok.map(l => l.pessoa.cpf))])
+        if (conflitos.length) {
+          res.status(409).json({ ok: false, conflitos, erro: 'Há pessoas com rifas em aberto em outro job' })
+          return
+        }
       }
       if (semCriar === true) {
         const totalRifas = parsed.ok.reduce((s, l) => s + l.pessoa.qtd, 0)
@@ -265,44 +273,38 @@ export async function startServer(opts: StartOpts = {}): Promise<{
   }))
 
   async function rodarJob(jobId: number): Promise<void> {
-    const config = await configAtual()
-    if (!config) return
-    let sessao: PodiumSession | null = null
     let deveParar = false
-    const parar = () => {
-      deveParar = true
-    }
-    runners.set(jobId, { parar })
-
+    runners.set(jobId, { parar: () => (deveParar = true) })
     try {
-      sessao = await login(config.cpf, config.senha)
+      const config = await configAtual()
+      if (!config) throw new Error('login não configurado')
+      let sessao = await login(config.cpf, config.senha)
       const automator = new Automator({
-        getSessao: async () => sessao,
-        submeterLinha: async (s, p) => {
+        // Ler é seguro de repetir: se a sessão caiu, renova e lê de novo.
+        lerRifas: async () => {
           try {
-            await (s as PodiumSession).submeterRifa(p)
-          } catch {
-            const okSessao = await (s as PodiumSession).checarSessao()
-            if (!okSessao) sessao = await login(config.cpf, config.senha)
-            throw new Error('sessão renovada, tentando de novo')
+            return await sessao.lerRifas()
+          } catch (e) {
+            if (await sessao.checarSessao().catch(() => false)) throw e
+            sessao = await login(config.cpf, config.senha)
+            return sessao.lerRifas()
           }
         },
-        lerMaiorNumero: async s => (s as PodiumSession).lerMaiorNumero(),
+        // Enviar NÃO é repetido aqui: o motor confere na tabela e decide.
+        submeter: p => sessao.submeterRifa(p),
+        salvar: l => banco.atualizarLinha(l),
         log: (msg, nivel) => {
           banco.registrarLog(msg, nivel ?? 'info', jobId).catch(falhaGravacao)
         },
         deveParar: () => deveParar,
-        onProgress: l => {
-          banco.atualizarLinha(l).catch(falhaGravacao)
-        },
       })
-      await automator.start(await banco.linhasDoJob(jobId), l => {
-        banco.atualizarLinha(l).catch(falhaGravacao)
-      })
-      await banco.atualizarStatusJob(jobId, deveParar ? 'pendente' : 'concluido')
+      await automator.start(await banco.linhasDoJob(jobId))
+      const todasOk = (await banco.linhasDoJob(jobId)).every(l => l.status === 'ok')
+      await banco.atualizarStatusJob(jobId, todasOk ? 'concluido' : 'pendente')
+      if (deveParar) await banco.registrarLog('Job pausado a pedido', 'warn', jobId)
     } catch (e) {
       // Se o banco também falhar aqui, o job fica 'rodando' até o próximo boot (reconciliado).
-      await banco.registrarLog(`Erro ao rodar job #${jobId}: ${(e as Error).message}`, 'error', jobId).catch(falhaGravacao)
+      await banco.registrarLog(`${(e as Error).message}`, 'error', jobId).catch(falhaGravacao)
       await banco.atualizarStatusJob(jobId, 'pendente').catch(falhaGravacao)
     } finally {
       runners.delete(jobId)
@@ -316,8 +318,8 @@ export async function startServer(opts: StartOpts = {}): Promise<{
       res.status(400).json({ ok: false, erro: 'Configure o login primeiro' })
       return
     }
-    if (runners.has(id)) {
-      res.status(409).json({ ok: false, erro: 'Job já está rodando' })
+    if (runners.size > 0) {
+      res.status(409).json({ ok: false, erro: 'Já existe um job rodando' })
       return
     }
     const existe = (await banco.listarJobs()).some(j => j.id === id)
@@ -337,17 +339,26 @@ export async function startServer(opts: StartOpts = {}): Promise<{
 
   app.post('/api/jobs/:id/cancelar', rota(async (req, res) => {
     const id = Number(req.params.id)
-    runners.get(id)?.parar()
-    await banco.cancelarJob(id)
-    await banco.registrarLog('Cancelamento solicitado', 'warn', id)
+    const runner = runners.get(id)
+    if (runner) {
+      // O runner termina o envio em andamento e libera o job ao sair (status 'pendente').
+      runner.parar()
+    } else {
+      await banco.cancelarJob(id)
+    }
+    await banco.registrarLog('Pausa solicitada: termina o envio em andamento e para', 'warn', id)
     res.json({ ok: true })
   }))
 
   app.post('/api/jobs/:id/reprocessar-erros', rota(async (req, res) => {
     const id = Number(req.params.id)
-    await banco.reprocessarErros(id)
-    await banco.registrarLog('Reprocessando erros', 'info', id)
-    res.json({ ok: true })
+    if (runners.has(id)) {
+      res.status(409).json({ ok: false, erro: 'Pause o job antes de reprocessar' })
+      return
+    }
+    const liberadas = await banco.reprocessarErros(id)
+    await banco.registrarLog(`Reprocessamento liberado para ${liberadas} linha(s) — o site será recontado antes de qualquer envio`, 'warn', id)
+    res.json({ ok: true, liberadas })
   }))
 
   // Express só reconhece handler de erro com 4 parâmetros, mesmo que `next` não seja usado.

@@ -1,132 +1,139 @@
+import { linhaLegada } from '../data/banco.ts'
 import type { LinhaJob, Pessoa } from '../types.ts'
+import type { RifaSite } from '../podium/session.ts'
 
 export interface AutomatorDeps {
-  getSessao: () => Promise<unknown>
-  submeterLinha: (sessao: unknown, p: Pessoa) => Promise<void>
-  lerMaiorNumero: (sessao: unknown) => Promise<number>
+  // Lê a tabela de rifas da conta. Deve LANÇAR se a página não for confiável.
+  lerRifas: () => Promise<RifaSite[]>
+  submeter: (p: Pessoa) => Promise<void>
+  // Persiste a linha. É aguardado: se falhar, nada é enviado depois.
+  salvar: (l: LinhaJob) => Promise<void>
   log: (msg: string, nivel?: 'info' | 'warn' | 'error') => void
   deveParar?: () => boolean
-  onProgress?: (l: LinhaJob) => void
-  esperaRetryMs?: number
+  // Espera antes de reler quando o envio ainda não apareceu na tabela.
+  esperaConfirmacaoMs?: number
 }
 
-const MAX_TENTATIVAS = 3 // tentativas seguidas sem avanço confirmado no site
+export class JobAbortado extends Error {
+  constructor(msg: string) {
+    super(msg)
+    this.name = 'JobAbortado'
+  }
+}
 
+const contarCpf = (rifas: RifaSite[], cpf: string): number => rifas.filter(r => r.cpf === cpf).length
+
+// Garantias (em ordem de prioridade):
+// 1. Nunca mais de `qtd` POSTs por linha, em toda a vida dela: `enviadas` é gravado ANTES de
+//    cada POST e o motor nunca envia com `enviadas >= qtd` — vale mesmo se a leitura do site errar.
+// 2. Nunca reenviar dentro de uma execução: envio não confirmado na tabela PARA o job.
+// 3. Confirmação pela contagem de rifas do CPF na tabela do site (não pelo Nº, que é uma
+//    sequência compartilhada com outras contas e não conta rifas).
 export class Automator {
   constructor(private deps: AutomatorDeps) {}
 
-  async start(linhas: LinhaJob[], onProgress: (l: LinhaJob) => void = () => {}): Promise<void> {
-    const { submeterLinha, lerMaiorNumero, deveParar, log, esperaRetryMs } = this.deps
-    const pendentes = linhas.filter(l => l.status !== 'ok')
+  async start(linhas: LinhaJob[]): Promise<void> {
+    const { lerRifas, submeter, salvar, log, deveParar } = this.deps
+    const espera = this.deps.esperaConfirmacaoMs ?? 3_000
+    let totalVisto = -1
 
-    for (const linha of pendentes) {
-      if (deveParar?.()) {
-        linha.status = 'pendente'
-        linha.erro = null
-        onProgress(linha)
-        break
+    // A tabela do site só cresce. Se encolher, a página não é confiável.
+    const ler = async (): Promise<RifaSite[]> => {
+      const rifas = await lerRifas()
+      if (rifas.length < totalVisto) {
+        throw new Error(`tabela do site encolheu (${totalVisto} → ${rifas.length} rifas)`)
       }
+      totalVisto = rifas.length
+      return rifas
+    }
+
+    const abortar = async (linha: LinhaJob, motivo: string): Promise<never> => {
+      linha.status = 'erro'
+      linha.erro = motivo
+      await salvar(linha)
+      throw new JobAbortado(`Job parado na linha #${linha.seq} (${linha.nome}): ${motivo}`)
+    }
+
+    for (const linha of linhas.filter(l => l.status !== 'ok')) {
+      if (deveParar?.()) return
+
+      if (linhaLegada(linha)) {
+        linha.status = 'erro'
+        linha.erro = 'Linha da versão anterior do app: confira no site quantas rifas existem e, se faltar, crie um novo job só com o que falta.'
+        await salvar(linha)
+        log(`Linha #${linha.seq} (${linha.nome}) ignorada: criada pela versão anterior`, 'warn')
+        continue
+      }
+
       linha.status = 'cadastrando'
       linha.erro = null
-      onProgress(linha)
+      await salvar(linha)
 
-      let sessao = await this.deps.getSessao()
-      if (linha.base === null) {
-        let n0: number
-        try {
-          n0 = await lerMaiorNumero(sessao)
-        } catch (e) {
-          linha.status = 'erro'
-          linha.erro = `não foi possível medir o Nº inicial: ${(e as Error).message}`
-          onProgress(linha)
-          throw new Error(`Abortando job: ${linha.erro}`)
-        }
-        linha.base = n0
-        onProgress(linha)
+      let rifas: RifaSite[]
+      try {
+        rifas = await ler()
+      } catch (e) {
+        return abortar(linha, `não foi possível ler as rifas no site: ${(e as Error).message}`)
       }
-      const qtd = linha.qtd
-      const alvo = linha.base + qtd
-      let ultimoErro = ''
-      let falhasSemAvanco = 0
-      let concluido = false
+      if (linha.base_cpf === null) {
+        linha.base_cpf = contarCpf(rifas, linha.cpf)
+        await salvar(linha)
+      }
+      const base = linha.base_cpf
 
-      // Regra de ouro: o Nº do site é a única verdade. Nunca re-submeter uma rifa
-      // sem antes CONFIRMAR (medindo) que ela não foi criada. Se a medição falhar
-      // depois de submeter, a linha é marcada como 'não confirmada' e o job é
-      // abortado — nunca se cria no escuro.
-      while (!concluido) {
-        if (deveParar?.()) {
-          linha.status = 'pendente'
+      for (;;) {
+        const doCpf = rifas.filter(r => r.cpf === linha.cpf)
+        linha.confirmadas = Math.max(0, doCpf.length - base)
+        linha.numeros = doCpf.slice(base).map(r => r.numero).join(', ')
+
+        if (linha.confirmadas >= linha.qtd) {
+          if (linha.confirmadas > linha.qtd) {
+            log(`Linha #${linha.seq}: o site mostra ${linha.confirmadas} rifas novas para ${linha.qtd} pedidas`, 'warn')
+          }
+          linha.status = 'ok'
           linha.erro = null
-          onProgress(linha)
-          return
-        }
-        sessao = await this.deps.getSessao()
-        let n0: number
-        try {
-          n0 = await lerMaiorNumero(sessao)
-        } catch (e) {
-          linha.status = 'erro'
-          linha.erro = `não foi possível medir o Nº atual: ${(e as Error).message}`
-          onProgress(linha)
-          throw new Error(`Abortando job: ${linha.erro}`)
-        }
-        const faltando = alvo - n0
-        if (faltando <= 0) {
-          concluido = true
+          await salvar(linha)
+          log(`Linha #${linha.seq} (${linha.nome}) ok: ${linha.numeros}`)
           break
         }
-        try {
-          sessao = await this.deps.getSessao()
-          await submeterLinha(sessao, {
-            nome: linha.nome,
-            cpf: linha.cpf,
-            telefone: linha.telefone,
-            email: linha.email,
-            qtd: 1,
-          })
-        } catch (e) {
-          ultimoErro = (e as Error).message
-          log(`Submissão falhou: ${ultimoErro}`, 'warn')
-        }
-        let nDepois: number
-        try {
-          sessao = await this.deps.getSessao()
-          nDepois = await lerMaiorNumero(sessao)
-        } catch (e) {
-          linha.status = 'erro'
-          linha.erro = `submissão não confirmada (verifique o site manualmente): ${(e as Error).message}`
-          onProgress(linha)
-          throw new Error(`Abortando job: ${linha.erro}`)
-        }
-        const criadas = nDepois - n0
-        if (criadas >= faltando) {
-          concluido = true
-          if (criadas > faltando) {
-            log(`Linha #${linha.id} registrou mais rifas que o esperado (${criadas} por cima de ${faltando} faltando)`, 'warn')
-          }
-        } else if (criadas > 0) {
-          falhasSemAvanco = 0
-          linha.enviadas = Math.min(linha.enviadas + criadas, qtd)
-          onProgress(linha)
-        } else {
-          falhasSemAvanco++
-          ultimoErro = `site não registrou a submissão (Nº ${n0}→${nDepois})`
-          log(ultimoErro, 'warn')
-          if (falhasSemAvanco >= MAX_TENTATIVAS) break
-          await new Promise(r => setTimeout(r, esperaRetryMs ?? 500))
-        }
-      }
 
-      if (concluido) {
-        linha.status = 'ok'
-        linha.erro = null
-        linha.enviadas = qtd
-      } else {
-        linha.status = 'erro'
-        linha.erro = ultimoErro || 'falha sem avanço confirmado no site'
+        if (linha.enviadas >= linha.qtd) {
+          return abortar(
+            linha,
+            `${linha.enviadas} envio(s) feitos e só ${linha.confirmadas} confirmado(s) na tabela. Confira no site antes de reprocessar.`
+          )
+        }
+        if (deveParar?.()) {
+          linha.status = 'pendente'
+          await salvar(linha)
+          return
+        }
+
+        // Grava o envio ANTES do POST: se o processo cair durante o POST, a retomada já o conta.
+        linha.enviadas++
+        await salvar(linha)
+        const antes = doCpf.length
+        try {
+          await submeter({ nome: linha.nome, cpf: linha.cpf, telefone: linha.telefone, email: linha.email, qtd: 1 })
+        } catch (e) {
+          log(`Linha #${linha.seq}: envio retornou erro (${(e as Error).message}); conferindo na tabela`, 'warn')
+        }
+
+        let depois = -1
+        for (let tentativa = 0; tentativa < 2; tentativa++) {
+          if (tentativa > 0) await new Promise(r => setTimeout(r, espera))
+          try {
+            rifas = await ler()
+          } catch (e) {
+            return abortar(linha, `envio não confirmado (falha ao ler o site: ${(e as Error).message}). Confira no site antes de reprocessar.`)
+          }
+          depois = contarCpf(rifas, linha.cpf)
+          if (depois > antes) break
+        }
+        if (depois <= antes) {
+          return abortar(linha, 'envio não apareceu na tabela do site. Confira no site antes de reprocessar.')
+        }
       }
-      onProgress(linha)
     }
   }
 }

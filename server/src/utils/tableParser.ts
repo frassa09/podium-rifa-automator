@@ -39,6 +39,10 @@ function findCol(headers: string[]): Record<keyof Pessoa, number> {
 export function validarPessoa(p: Pessoa): string[] {
   const erros: string[] = []
   if (!p.nome || !p.nome.trim()) erros.push('Nome obrigatório')
+  // O site é ISO-8859-1: emoji/símbolos fora dele não podem ser enviados.
+  const foraLatin1 = (v: string) => [...v.normalize('NFC')].some(c => c.codePointAt(0)! > 0xff)
+  if (foraLatin1(p.nome)) erros.push('Nome tem caractere não aceito pelo site')
+  if (foraLatin1(p.email)) erros.push('E-mail tem caractere não aceito pelo site')
   if (!validarCPF(p.cpf)) erros.push('CPF inválido')
   if (apenasDigitos(p.telefone).length < 10) erros.push('Telefone inválido')
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(p.email)) erros.push('E-mail inválido')
@@ -60,10 +64,10 @@ function deArray(rows: unknown[][]): ResultadoParse {
     const s = (i?: number): string =>
       i === undefined ? '' : String(row[i] ?? '').trim()
     const pessoa: Pessoa = {
-      nome: s(idx.nome),
+      nome: s(idx.nome).normalize('NFC'),
       cpf: apenasDigitos(s(idx.cpf)),
       telefone: apenasDigitos(s(idx.telefone)),
-      email: s(idx.email),
+      email: s(idx.email).normalize('NFC'),
       qtd: idx.qtd !== undefined ? Number(s(idx.qtd)) || 0 : 1,
     }
     out.total++

@@ -20,8 +20,14 @@ export interface LinhaJob {
   status: StatusLinha
   erro: string | null
   numeros: string
+  // Legado (versão que media pelo Nº). Não é mais escrito; só identifica linhas antigas.
   base: number | null
+  // Quantas rifas este CPF já tinha no site antes da linha começar (medido uma vez, persistido).
+  base_cpf: number | null
+  // POSTs já disparados para a linha. Gravado ANTES de cada POST; nunca passa de qtd.
   enviadas: number
+  // Rifas da linha confirmadas na tabela do site (contagem do CPF − base_cpf).
+  confirmadas: number
 }
 
 export type StatusJob = 'pendente' | 'rodando' | 'concluido' | 'pausado' | 'cancelado'

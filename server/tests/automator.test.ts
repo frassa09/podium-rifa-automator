@@ -1,268 +1,259 @@
 import { describe, expect, it } from 'vitest'
-import { Automator, type AutomatorDeps } from '../src/engine/automator.ts'
+import { Automator, JobAbortado, type AutomatorDeps } from '../src/engine/automator.ts'
+import type { RifaSite } from '../src/podium/session.ts'
 import type { LinhaJob, Pessoa } from '../src/types.ts'
 
-const linha = (id: number, qtd = 1, status: LinhaJob['status'] = 'pendente', extra: Partial<LinhaJob> = {}): LinhaJob => ({
-  id, job_id: 1, seq: id, nome: 'Maria', cpf: '86730169087',
-  telefone: '11987654321', email: 'm@x.com', qtd, status, erro: null, numeros: '',
-  base: null, enviadas: 0, ...extra,
+const CPF_A = '86730169087'
+const CPF_B = '11144477735'
+
+function linha(id: number, cpf: string, qtd = 1, extra: Partial<LinhaJob> = {}): LinhaJob {
+  return {
+    id, job_id: 1, seq: id, nome: `Pessoa ${id}`, cpf, telefone: '11987654321', email: 'a@b.com', qtd,
+    status: 'pendente', erro: null, numeros: '', base: null, base_cpf: null, enviadas: 0, confirmadas: 0,
+    ...extra,
+  }
+}
+
+// Site em memória: `aoEnviar` decide o que cada POST faz; a leitura pode ser sabotada.
+function siteMemoria(iniciais: RifaSite[] = []) {
+  let numero = 1003
+  const s = {
+    rifas: [...iniciais],
+    posts: [] as Pessoa[],
+    aoEnviar: (p: Pessoa): 'cria' | 'ignora' | 'cria-e-lanca' | 'lanca' => (void p, 'cria'),
+    leitura: (r: RifaSite[]): RifaSite[] => r,
+    salvos: [] as LinhaJob[],
+    logs: [] as string[],
+    parar: false,
+    lerFalha: 0, // próximas N leituras lançam
+  }
+  const deps: AutomatorDeps = {
+    lerRifas: async () => {
+      if (s.lerFalha > 0) {
+        s.lerFalha--
+        throw new Error('timeout lendo página')
+      }
+      return s.leitura([...s.rifas])
+    },
+    submeter: async p => {
+      s.posts.push(p)
+      const acao = s.aoEnviar(p)
+      if (acao === 'cria' || acao === 'cria-e-lanca') {
+        numero += 7 // sequência compartilhada com outras contas
+        s.rifas.push({ numero: String(numero).padStart(7, '0'), cpf: p.cpf })
+      }
+      if (acao === 'cria-e-lanca' || acao === 'lanca') throw new Error('socket hang up')
+    },
+    salvar: async l => {
+      s.salvos.push({ ...l })
+    },
+    log: m => s.logs.push(m),
+    deveParar: () => s.parar,
+    esperaConfirmacaoMs: 1,
+  }
+  return { s, automator: new Automator(deps), deps }
+}
+
+describe('Automator — caminho feliz', () => {
+  it('cria exatamente qtd rifas por linha, em ordem, e marca ok com os Nºs', async () => {
+    const { s, automator } = siteMemoria([{ numero: '0000900', cpf: CPF_A }])
+    const linhas = [linha(1, CPF_A, 2), linha(2, CPF_B, 1)]
+    await automator.start(linhas)
+    expect(s.posts.map(p => p.cpf)).toEqual([CPF_A, CPF_A, CPF_B])
+    expect(linhas.map(l => l.status)).toEqual(['ok', 'ok'])
+    expect(linhas[0]!.base_cpf).toBe(1) // CPF já tinha 1 rifa antes
+    expect(linhas[0]!.confirmadas).toBe(2)
+    expect(linhas[0]!.numeros.split(', ')).toHaveLength(2)
+    expect(s.posts.every(p => p.qtd === 1)).toBe(true)
+  })
+
+  it('não reenvia linha já ok (retomada)', async () => {
+    const { s, automator } = siteMemoria()
+    await automator.start([linha(1, CPF_A, 1, { status: 'ok' })])
+    expect(s.posts).toHaveLength(0)
+  })
+
+  it('grava enviadas ANTES de cada POST', async () => {
+    const { s, automator } = siteMemoria()
+    let enviadasGravadasNoPost = -1
+    s.aoEnviar = () => {
+      enviadasGravadasNoPost = s.salvos.at(-1)!.enviadas
+      return 'cria'
+    }
+    await automator.start([linha(1, CPF_A, 1)])
+    expect(enviadasGravadasNoPost).toBe(1)
+  })
 })
 
-function siteMock() {
-  let siteN = 0
-  const submetidas: Pessoa[] = []
-  const deps: AutomatorDeps = {
-    getSessao: async () => ({}) as never,
-    submeterLinha: async (_s: unknown, p: Pessoa) => { submetidas.push(p); siteN += p.qtd },
-    lerMaiorNumero: async () => siteN,
-    log: () => {},
-  }
-  return { deps, get siteN() { return siteN }, submetidas }
-}
-
-function ultimosStatus(progress: LinhaJob[]): Map<number, string> {
-  const m = new Map<number, string>()
-  for (const l of progress) m.set(l.id, l.status)
-  return m
-}
-
-describe('Automator', () => {
-  it('processa todas as linhas na ordem', async () => {
-    const { deps, submetidas } = siteMock()
-    const a = new Automator(deps)
-    const linhas = [linha(1), linha(2), linha(3)]
-    const progress: LinhaJob[] = []
-    await a.start(linhas, l => progress.push(l))
-    expect(submetidas).toHaveLength(3)
-    expect([...ultimosStatus(progress).values()]).toEqual(['ok', 'ok', 'ok'])
-  })
-
-  it('replica submissões quando qtd > 1', async () => {
-    const { deps, submetidas } = siteMock()
-    const a = new Automator(deps)
-    await a.start([linha(1, 3)], () => {})
-    expect(submetidas).toHaveLength(3)
-  })
-
-  it('marca erro após 2 tentativas com motivos', async () => {
-    const deps: AutomatorDeps = {
-      getSessao: async () => ({}) as never,
-      submeterLinha: async () => { throw new Error('rede') },
-      lerMaiorNumero: async () => 0,
-      log: () => {},
-    }
-    const a = new Automator(deps)
-    const progress: LinhaJob[] = []
-    await a.start([linha(1)], l => progress.push(l))
-    expect([...ultimosStatus(progress).values()]).toEqual(['erro'])
-    expect(progress[progress.length - 1]?.erro).toBeTruthy()
-  })
-
-  it('não reprocessa linha já ok (resume)', async () => {
-    const { deps, submetidas } = siteMock()
-    const a = new Automator(deps)
-    await a.start([linha(1, 1, 'ok'), linha(2)], () => {})
-    expect(submetidas).toHaveLength(1)
-    expect(submetidas[0]?.cpf).toBe('86730169087')
-  })
-
-  it('para quando deveParar retorna true e deixa linha pendente', async () => {
-    const { deps } = siteMock()
-    deps.deveParar = () => true
-    const a = new Automator(deps)
-    const progress: LinhaJob[] = []
-    await a.start([linha(1), linha(2)], l => progress.push(l))
-    expect([...ultimosStatus(progress).values()]).toEqual(['pendente'])
-    expect(progress[progress.length - 1]?.erro).toBeNull()
-  })
-
-  it('emite cadastrando antes do estado final', async () => {
-    const { deps } = siteMock()
-    const a = new Automator(deps)
-    const statuses: string[] = []
-    await a.start([linha(1)], l => statuses.push(l.status))
-    expect(statuses).toContain('cadastrando')
-    expect(statuses[statuses.length - 1]).toBe('ok')
-  })
-
-  it('cancelamento durante submissão deixa linha pendente (não re-submete)', async () => {
-    let chamadas = 0
-    let parar = false
-    const { deps } = siteMock()
-    const sub = deps.submeterLinha
-    deps.submeterLinha = async (s, p) => { chamadas++; if (chamadas === 1) parar = true; await sub(s, p) }
-    deps.deveParar = () => parar
-    const a = new Automator(deps)
-    const progress: LinhaJob[] = []
-    await a.start([linha(1, 2)], l => progress.push(l))
-    expect(chamadas).toBe(1)
-    expect(progress[0]?.status).toBe('pendente')
-  })
-
-  it('retomada não duplica linhas já ok', async () => {
-    const { deps, submetidas } = siteMock()
-    const a = new Automator(deps)
-    const linhas = [linha(1, 1, 'ok')]
-    await a.start(linhas, () => {})
-    expect(submetidas).toHaveLength(0)
-  })
-
-  it('não marca ok sem verificação quando a página não retorna números', async () => {
-    const deps: AutomatorDeps = {
-      getSessao: async () => ({}) as never,
-      submeterLinha: async () => {},
-      lerMaiorNumero: async () => 0,
-      log: () => {},
-    }
-    const a = new Automator(deps)
-    const progress: LinhaJob[] = []
-    await a.start([linha(1)], l => progress.push(l))
-    expect(progress[progress.length - 1]?.status).toBe('erro')
-  })
-
-  it('cancelar e retomar linha parcial não re-submete o que já entrou', async () => {
-    let siteN = 101
-    const submetidas: Pessoa[] = []
-    const deps: AutomatorDeps = {
-      getSessao: async () => ({}) as never,
-      submeterLinha: async (_s: unknown, p: Pessoa) => { submetidas.push(p); siteN += 1 },
-      lerMaiorNumero: async () => siteN,
-      log: () => {},
-    }
-    const a = new Automator(deps)
-    const l = linha(1, 2, 'pendente', { base: 100, enviadas: 1 })
-    await a.start([l], () => {})
-    expect(submetidas).toHaveLength(1)
-    expect(l.status).toBe('ok')
-    expect(l.enviadas).toBe(2)
-  })
-
-  it('renova sessão a cada tentativa quando a sessão expira', async () => {
-    let renovada = false
-    let siteN = 0
-    const deps: AutomatorDeps = {
-      getSessao: async () => ({ id: renovada ? 2 : 1 }),
-      submeterLinha: async s => {
-        if ((s as { id: number }).id === 1) {
-          renovada = true
-          throw new Error('sessão expirada')
-        }
-        siteN += 1
-      },
-      lerMaiorNumero: async () => siteN,
-      log: () => {},
-    }
-    const a = new Automator(deps)
-    const progress: LinhaJob[] = []
-    await a.start([linha(1)], l => progress.push(l))
-    expect(progress[progress.length - 1]?.status).toBe('ok')
-    expect(siteN).toBe(1)
-  })
-
-  it('não duplica quando a submissão foi processada mas a resposta lança erro', async () => {
-    let siteN = 500
-    const submetidas: Pessoa[] = []
-    const deps: AutomatorDeps = {
-      getSessao: async () => ({}) as never,
-      submeterLinha: async (_s: unknown, p: Pessoa) => {
-        submetidas.push(p)
-        siteN += 1
-        throw new Error('rede caiu após enviar')
-      },
-      lerMaiorNumero: async () => siteN,
-      log: () => {},
-    }
-    const a = new Automator(deps)
-    const l = linha(1, 1, 'pendente', { base: 500 })
-    const progress: LinhaJob[] = []
-    await a.start([l], x => progress.push(x))
-    expect(submetidas).toHaveLength(1)
-    expect(progress[progress.length - 1]?.status).toBe('ok')
-  })
-
-  it('não re-submete quando a criação não pode ser confirmada (parada de segurança)', async () => {
-    let siteN = 100
-    let leituras = 0
-    const submetidas: Pessoa[] = []
-    const deps: AutomatorDeps = {
-      getSessao: async () => ({}) as never,
-      submeterLinha: async (_s: unknown, p: Pessoa) => {
-        submetidas.push(p)
-        siteN += 1
-        throw new Error('sem diagnóstico de rede')
-      },
-      lerMaiorNumero: async () => {
-        leituras++
-        if (leituras > 1) throw new Error('leitura indisponível')
-        return siteN
-      },
-      log: () => {},
-    }
-    const a = new Automator(deps)
-    const l = linha(1, 1, 'pendente', { base: 100 })
-    await expect(a.start([l])).rejects.toThrow()
-    expect(submetidas).toHaveLength(1)
+describe('Automator — nunca cria além do pedido', () => {
+  it('REGRESSÃO: leitura que não enxerga a rifa criada → 1 envio só, job para com erro', async () => {
+    const { s, automator } = siteMemoria()
+    s.leitura = () => [] // como o bug do Nº 0→0: a leitura nunca mostra nada
+    const l = linha(1, CPF_A, 1)
+    await expect(automator.start([l])).rejects.toBeInstanceOf(JobAbortado)
+    expect(s.posts).toHaveLength(1)
+    expect(s.rifas).toHaveLength(1)
     expect(l.status).toBe('erro')
-    expect(l.erro).toContain('não confirmada')
+    expect(l.erro).toMatch(/Confira no site/)
   })
 
-  it('não duplica em lote quando uma submissão do meio falha após criar', async () => {
-    let siteN = 0
-    let chamadas = 0
-    const submetidas: Pessoa[] = []
-    const deps: AutomatorDeps = {
-      getSessao: async () => ({}) as never,
-      submeterLinha: async (_s: unknown, p: Pessoa) => {
-        submetidas.push(p)
-        siteN += 1
-        chamadas++
-        if (chamadas === 2) throw new Error('falha na 2ª submissão')
-      },
-      lerMaiorNumero: async () => siteN,
-      log: () => {},
-    }
-    const a = new Automator(deps)
-    const l = linha(1, 2)
-    await a.start([l], () => {})
-    expect(submetidas).toHaveLength(2)
+  it('site ignora o POST → não reenvia; para e pede conferência', async () => {
+    const { s, automator } = siteMemoria()
+    s.aoEnviar = () => 'ignora'
+    const l = linha(1, CPF_A, 3)
+    await expect(automator.start([l])).rejects.toBeInstanceOf(JobAbortado)
+    expect(s.posts).toHaveLength(1)
+  })
+
+  it('POST cria mas a resposta lança erro → conta na tabela e segue sem duplicar', async () => {
+    const { s, automator } = siteMemoria()
+    s.aoEnviar = () => 'cria-e-lanca'
+    const l = linha(1, CPF_A, 2)
+    await automator.start([l])
+    expect(s.posts).toHaveLength(2)
+    expect(s.rifas).toHaveLength(2)
     expect(l.status).toBe('ok')
-    expect(siteN).toBe(2)
   })
 
-  it('não envia nada quando o Nº do site já alcançou o alvo da linha', async () => {
-    const submetidas: Pessoa[] = []
-    const deps: AutomatorDeps = {
-      getSessao: async () => ({}) as never,
-      submeterLinha: async (_s: unknown, p: Pessoa) => { submetidas.push(p) },
-      lerMaiorNumero: async () => 102,
-      log: () => {},
+  it('site atrasado: rifa aparece só na segunda leitura → confirma sem reenviar', async () => {
+    const { s, automator } = siteMemoria()
+    let atrasar = true
+    s.leitura = r => {
+      if (atrasar && r.length > 0) {
+        atrasar = false
+        return r.slice(0, -1)
+      }
+      return r
     }
-    const a = new Automator(deps)
-    const l = linha(1, 2, 'pendente', { base: 100, enviadas: 0 })
-    await a.start([l], () => {})
-    expect(submetidas).toHaveLength(0)
+    const l = linha(1, CPF_A, 1)
+    await automator.start([l])
+    expect(s.posts).toHaveLength(1)
     expect(l.status).toBe('ok')
-    expect(l.enviadas).toBe(2)
   })
 
-  it('falha inicial de medição do Nº aborta a linha sem gravar base 0 (nunca falso-ok)', async () => {
-    let submeteu = false
-    const deps: AutomatorDeps = {
-      getSessao: async () => ({}) as never,
-      submeterLinha: async () => {
-        submeteu = true
-      },
-      lerMaiorNumero: async () => {
-        throw new Error('site indisponível')
-      },
-      log: () => {},
+  it('falha de leitura após o POST → para sem reenviar', async () => {
+    const { s, automator } = siteMemoria()
+    s.aoEnviar = () => {
+      s.lerFalha = 2
+      return 'cria'
     }
-    const a = new Automator(deps)
-    const l = linha(1)
-    await expect(a.start([l])).rejects.toThrow(/Abortando job/)
+    const l = linha(1, CPF_A, 3)
+    await expect(automator.start([l])).rejects.toThrow(/não confirmado/)
+    expect(s.posts).toHaveLength(1)
+  })
+
+  it('tabela que encolhe é tratada como página não confiável', async () => {
+    const { s, automator } = siteMemoria([{ numero: '0000001', cpf: CPF_B }, { numero: '0000002', cpf: CPF_B }])
+    s.aoEnviar = () => {
+      s.leitura = r => r.slice(2)
+      return 'cria'
+    }
+    await expect(automator.start([linha(1, CPF_A, 2)])).rejects.toThrow(/encolheu/)
+    expect(s.posts).toHaveLength(1)
+  })
+
+  it('teto absoluto: com enviadas = qtd nunca envia, mesmo que a leitura diga que falta', async () => {
+    const { s, automator } = siteMemoria()
+    const l = linha(1, CPF_A, 2, { base_cpf: 0, enviadas: 2, confirmadas: 0 })
+    await expect(automator.start([l])).rejects.toThrow(/2 envio\(s\) feitos e só 0 confirmado/)
+    expect(s.posts).toHaveLength(0)
+  })
+
+  it('soma de POSTs nunca passa de qtd mesmo com o site respondendo tudo errado', async () => {
+    for (const acao of ['ignora', 'lanca', 'cria-e-lanca', 'cria'] as const) {
+      for (const leituraQuebrada of [false, true]) {
+        const { s, automator } = siteMemoria()
+        s.aoEnviar = () => acao
+        if (leituraQuebrada) s.leitura = () => []
+        const linhas = [linha(1, CPF_A, 3), linha(2, CPF_B, 2)]
+        await automator.start(linhas).catch(() => undefined)
+        expect(s.posts.filter(p => p.cpf === CPF_A).length).toBeLessThanOrEqual(3)
+        expect(s.posts.filter(p => p.cpf === CPF_B).length).toBeLessThanOrEqual(2)
+      }
+    }
+  })
+})
+
+describe('Automator — retomada após queda', () => {
+  it('queda durante o POST: retomada reconta e não reenvia o que entrou', async () => {
+    const { s, automator } = siteMemoria()
+    // Estado gravado antes da queda: base medida, 1 envio registrado, rifa entrou no site.
+    s.rifas.push({ numero: '0001010', cpf: CPF_A })
+    const l = linha(1, CPF_A, 2, { base_cpf: 0, enviadas: 1, status: 'pendente' })
+    await automator.start([l])
+    expect(s.posts).toHaveLength(1) // só a que faltava
+    expect(l.status).toBe('ok')
+    expect(l.confirmadas).toBe(2)
+  })
+
+  it('queda durante o POST que não entrou: com enviadas = qtd, pede conferência em vez de reenviar', async () => {
+    const { s, automator } = siteMemoria()
+    const l = linha(1, CPF_A, 1, { base_cpf: 0, enviadas: 1 })
+    await expect(automator.start([l])).rejects.toBeInstanceOf(JobAbortado)
+    expect(s.posts).toHaveLength(0)
+  })
+
+  it('base por CPF é medida uma vez e mantida na retomada', async () => {
+    const { s, automator } = siteMemoria([{ numero: '0000500', cpf: CPF_A }])
+    const l = linha(1, CPF_A, 1, { base_cpf: 1 })
+    s.rifas.push({ numero: '0000600', cpf: CPF_A }) // criada antes da queda
+    await automator.start([l])
+    expect(s.posts).toHaveLength(0)
+    expect(l.status).toBe('ok')
+    expect(l.base_cpf).toBe(1)
+  })
+
+  it('mesmo CPF em duas linhas: a segunda mede a base depois da primeira', async () => {
+    const { s, automator } = siteMemoria()
+    const linhas = [linha(1, CPF_A, 1), linha(2, CPF_A, 2)]
+    await automator.start(linhas)
+    expect(s.posts).toHaveLength(3)
+    expect(linhas[1]!.base_cpf).toBe(1)
+  })
+})
+
+describe('Automator — controle e legado', () => {
+  it('linha da versão antiga (base pelo Nº) nunca é enviada', async () => {
+    const { s, automator } = siteMemoria()
+    const l = linha(1, CPF_A, 1, { base: 0, status: 'erro', erro: 'site não registrou a submissão (Nº 0→0)' })
+    await automator.start([l])
+    expect(s.posts).toHaveLength(0)
     expect(l.status).toBe('erro')
-    expect(l.base).toBeNull()
-    expect(l.erro).toContain('não foi possível medir o Nº inicial')
-    expect(submeteu).toBe(false)
+    expect(l.erro).toMatch(/versão anterior/)
+  })
+
+  it('pausa entre envios deixa a linha pendente com o progresso salvo', async () => {
+    const { s, automator } = siteMemoria()
+    s.aoEnviar = () => {
+      s.parar = true
+      return 'cria'
+    }
+    const l = linha(1, CPF_A, 3)
+    await automator.start([l])
+    expect(s.posts).toHaveLength(1)
+    expect(l.status).toBe('pendente')
+    expect(l.confirmadas).toBe(1)
+    expect(l.enviadas).toBe(1)
+  })
+
+  it('falha na leitura inicial aborta sem enviar', async () => {
+    const { s, automator } = siteMemoria()
+    s.lerFalha = 1
+    const l = linha(1, CPF_A, 1)
+    await expect(automator.start([l])).rejects.toThrow(/não foi possível ler/)
+    expect(s.posts).toHaveLength(0)
+    expect(l.base_cpf).toBeNull()
+  })
+
+  it('se salvar falhar, nada é enviado', async () => {
+    const { s, deps } = siteMemoria()
+    const automator = new Automator({
+      ...deps,
+      salvar: async l => {
+        if (l.enviadas > 0) throw new Error('banco fora')
+      },
+    })
+    await expect(automator.start([linha(1, CPF_A, 1)])).rejects.toThrow(/banco fora/)
+    expect(s.posts).toHaveLength(0)
   })
 })

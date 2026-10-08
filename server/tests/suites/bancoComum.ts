@@ -66,6 +66,37 @@ export function suíteComumBanco(novo: () => Promise<Banco>): void {
     expect(await banco.tentarIniciarJob(id2)).toBe(true)
   })
 
+  it('persiste base_cpf, enviadas e confirmadas', async () => {
+    const banco = await novo()
+    const id = await banco.criarJob([pessoaExemplo])
+    const linha = (await banco.linhasDoJob(id))[0]!
+    expect([linha.base_cpf, linha.enviadas, linha.confirmadas]).toEqual([null, 0, 0])
+    await banco.atualizarLinha({ ...linha, base_cpf: 4, enviadas: 2, confirmadas: 1, numeros: '0001310' })
+    const lida = (await banco.linhasDoJob(id))[0]!
+    expect([lida.base_cpf, lida.enviadas, lida.confirmadas, lida.numeros]).toEqual([4, 2, 1, '0001310'])
+  })
+
+  it('atualizarLinha nunca diminui enviadas (registro de POSTs)', async () => {
+    const banco = await novo()
+    const id = await banco.criarJob([pessoaExemplo])
+    const linha = (await banco.linhasDoJob(id))[0]!
+    await banco.atualizarLinha({ ...linha, base_cpf: 0, enviadas: 2 })
+    await expect(banco.atualizarLinha({ ...linha, base_cpf: 0, enviadas: 1 })).rejects.toThrow(/recusada/)
+    expect((await banco.linhasDoJob(id))[0]!.enviadas).toBe(2)
+  })
+
+  it('reprocessarErros libera só o não confirmado e nunca linha da versão antiga', async () => {
+    const banco = await novo()
+    const id = await banco.criarJob([pessoaExemplo, pessoaExemplo])
+    const [nova, antiga] = await banco.linhasDoJob(id)
+    await banco.atualizarLinha({ ...nova!, status: 'erro', erro: 'x', base_cpf: 0, enviadas: 3, confirmadas: 1 })
+    await banco.atualizarLinha({ ...antiga!, status: 'erro', erro: 'x', enviadas: 1 }) // base_cpf null + enviadas > 0
+    expect(await banco.reprocessarErros(id)).toBe(1)
+    const [n, a] = await banco.linhasDoJob(id)
+    expect([n!.status, n!.enviadas]).toEqual(['pendente', 1])
+    expect(a!.status).toBe('erro')
+  })
+
   it('reconciliarBoot devolve rodando e cadastrando a pendente', async () => {
     const banco = await novo()
     const id = await banco.criarJob([pessoaExemplo])

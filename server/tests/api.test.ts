@@ -15,7 +15,7 @@ async function criarJob(base: string, texto: string): Promise<number> {
   const r = await fetch(`${base}/api/jobs`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ texto }),
+    body: JSON.stringify({ texto, forcar: true }),
   })
   const j = (await r.json()) as { ok: boolean; jobId: number }
   expect(r.status).toBe(200)
@@ -101,6 +101,7 @@ describe('API', () => {
       body: JSON.stringify({
         texto: 'Nome;CPF;Telefone;E-mail;Qtd\nMaria;86730169087;11987654321;m@x.com;3\nJoão;86730169087;11987654321;j@x.com;2',
         semCriar: true,
+        forcar: true,
       }),
     })
     expect(r.status).toBe(200)
@@ -130,7 +131,7 @@ describe('API', () => {
     const r = await fetch(`${base}/api/jobs`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ arquivo: base64, nomeArquivo: 'x.xlsx' }),
+      body: JSON.stringify({ arquivo: base64, nomeArquivo: 'x.xlsx', forcar: true }),
     })
     expect(r.status).toBe(200)
     const j = await r.json()
@@ -146,6 +147,7 @@ describe('API', () => {
           { nome: 'João', cpf: '867.301.690-87', telefone: '(11) 98765-4321', email: 'joao@x.com', qtd: 2 },
           { nome: 'Maria', cpf: '86730169087', telefone: '11987654321', email: 'maria@x.com', qtd: '1' },
         ] as Pessoa[],
+        forcar: true,
       }),
     })
     expect(r.status).toBe(200)

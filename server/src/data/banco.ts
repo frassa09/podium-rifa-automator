@@ -23,6 +23,14 @@ export const CLAIM_JOB_SQL =
 // Serialeia claims concorrentes dentro da mesma transação (Postgres).
 const LOCK_JOB_GLOBAL_SQL = 'SELECT pg_advisory_xact_lock(893222001)'
 
+// Linha criada/rodada pela versão antiga (que media pelo Nº e chegou a enviar ou medir):
+// o estado dela não é confiável para a nova contagem por CPF.
+export const SQL_LINHA_LEGADA = '(base_cpf IS NULL AND (base IS NOT NULL OR enviadas > 0))'
+
+export function linhaLegada(l: Pick<LinhaJob, 'base_cpf' | 'base' | 'enviadas'>): boolean {
+  return l.base_cpf === null && (l.base !== null || l.enviadas > 0)
+}
+
 export function num(v: unknown): number {
   return typeof v === 'number' ? v : Number(v ?? 0)
 }
@@ -41,7 +49,9 @@ function normalizarLinha(r: Record<string, unknown>): LinhaJob {
     erro: r.erro == null ? null : String(r.erro),
     numeros: String(r.numeros),
     base: r.base == null ? null : num(r.base),
+    base_cpf: r.base_cpf == null ? null : num(r.base_cpf),
     enviadas: num(r.enviadas),
+    confirmadas: num(r.confirmadas),
   }
 }
 
@@ -85,13 +95,32 @@ export abstract class Banco {
     )
   }
 
+  // Linhas não concluídas de outros jobs com os mesmos CPFs: criar outro job para elas
+  // pode duplicar rifas.
+  async linhasEmAbertoDosCpfs(cpfs: string[]): Promise<{ job_id: number; nome: string; cpf: string }[]> {
+    if (!cpfs.length) return []
+    const marcadores = cpfs.map(() => '?').join(', ')
+    return this.executar(async e =>
+      (await e.rows<Record<string, unknown>>(
+        `SELECT job_id, nome, cpf FROM job_linhas WHERE status != 'ok' AND cpf IN (${marcadores}) ORDER BY job_id, seq`,
+        cpfs
+      )).map(r => ({ job_id: num(r.job_id), nome: String(r.nome), cpf: String(r.cpf) }))
+    )
+  }
+
   async linhasDoJob(jobId: number): Promise<LinhaJob[]> {
     return this.executar(async e => (await e.rows<Record<string, unknown>>('SELECT * FROM job_linhas WHERE job_id = ? ORDER BY seq', [jobId])).map(normalizarLinha))
   }
 
   async atualizarLinha(l: LinhaJob): Promise<void> {
     await this.executar(async e => {
-      await e.changes('UPDATE job_linhas SET status = ?, erro = ?, numeros = ?, base = ?, enviadas = ? WHERE id = ?', [l.status, l.erro, l.numeros, l.base, l.enviadas, l.id])
+      // `base` (legado) não é regravado. `enviadas` nunca diminui por aqui: só o reprocessamento
+      // explícito (usuário conferiu o site) pode baixá-lo.
+      const n = await e.changes(
+        'UPDATE job_linhas SET status = ?, erro = ?, numeros = ?, base_cpf = ?, enviadas = ?, confirmadas = ? WHERE id = ? AND enviadas <= ?',
+        [l.status, l.erro, l.numeros, l.base_cpf, l.enviadas, l.confirmadas, l.id, l.enviadas]
+      )
+      if (n === 0) throw new Error(`Linha #${l.id}: gravação recusada (registro de envios no banco é maior que o informado)`)
     })
   }
 
@@ -140,16 +169,17 @@ export abstract class Banco {
     return this.executar(async e => (await e.changes("UPDATE jobs SET status = 'pendente' WHERE id = ? AND status = 'rodando'", [jobId])) > 0)
   }
 
-  async reprocessarErros(jobId: number): Promise<void> {
-    await this.executar(async e => {
-      await e.changes("UPDATE job_linhas SET status = 'pendente', erro = NULL WHERE job_id = ? AND status = 'erro'", [jobId])
-    })
-  }
-
-  async resetarJob(jobId: number): Promise<void> {
-    await this.executar(async e => {
-      await e.changes("UPDATE job_linhas SET status = 'pendente', erro = NULL WHERE job_id = ?", [jobId])
-    })
+  // Ação explícita do usuário depois de conferir o site: libera reenvio só do que não foi
+  // confirmado (enviadas volta a confirmadas). Na retomada o motor recontará no site antes de enviar.
+  // Linhas da versão antiga (medição pelo Nº) nunca são liberadas.
+  async reprocessarErros(jobId: number): Promise<number> {
+    return this.executar(async e =>
+      e.changes(
+        `UPDATE job_linhas SET status = 'pendente', erro = NULL, enviadas = confirmadas
+         WHERE job_id = ? AND status = 'erro' AND NOT ${SQL_LINHA_LEGADA}`,
+        [jobId]
+      )
+    )
   }
 
   async listarJobs(): Promise<ListaJob[]> {
