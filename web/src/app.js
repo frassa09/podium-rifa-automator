@@ -1,6 +1,6 @@
 const $ = sel => document.querySelector(sel)
 
-const state = { jobId: null, timer: null, linhas: [] }
+const state = { jobId: null, job: null, timer: null, linhas: [] }
 let pin = sessionStorage.getItem('pin') || ''
 
 const TELAS = ['config', 'manual', 'importar', 'progresso', 'historico']
@@ -430,7 +430,9 @@ async function refreshJob() {
     h.appendChild(b)
     h.append(` (criado ${d.job.criado_em})`)
     state.linhas = d.linhas
+    state.job = d.job
     $('#btn-iniciar').disabled = d.job.status === 'rodando'
+    $('#btn-excluir').hidden = !podeExcluir(d.job)
     renderLinhas()
     const logs = d.logs.join('\n')
     $('#logs').hidden = logs.length === 0
@@ -473,6 +475,39 @@ $('#btn-reproc').addEventListener('click', async () => {
   await refreshJob()
 })
 
+// ————— Excluir job (só do app; nada é apagado no site) —————
+const podeExcluir = j => j.status !== 'rodando' && (j.status !== 'concluido' || j.erro > 0)
+
+async function excluirJob(j) {
+  let msg =
+    `Excluir o job #${j.id} (${j.total} linha(s)) do app?\n\n` +
+    'Isso apaga só o registro aqui. Rifas já criadas no site da Podium NÃO são apagadas.'
+  if (j.sem_confirmacao > 0) {
+    msg +=
+      `\n\nATENÇÃO: ${j.sem_confirmacao} linha(s) tiveram envio que o app não conseguiu confirmar. ` +
+      'Confira no site quantas rifas essas pessoas já têm ANTES de criar um job novo para elas, senão pode duplicar.'
+  }
+  if (!confirm(msg)) return false
+  try {
+    await api(`/api/jobs/${j.id}`, { method: 'DELETE' })
+    return true
+  } catch (err) {
+    let erro = err.message
+    try { erro = JSON.parse(erro.substring(erro.indexOf('{'))).erro ?? erro } catch {}
+    alert('Não excluiu: ' + erro)
+    return false
+  }
+}
+
+$('#btn-excluir').addEventListener('click', async () => {
+  if (!state.job) return
+  if (await excluirJob(state.job)) {
+    state.jobId = null
+    state.job = null
+    trocarTela('historico')
+  }
+})
+
 // ————— Histórico —————
 async function refreshHistorico() {
   const ul = $('#historico-lista')
@@ -499,7 +534,14 @@ async function refreshHistorico() {
         await api(`/api/jobs/${j.id}/reprocessar-erros`, { method: 'POST' })
         await refreshHistorico()
       })
-      li.append(dot, info, abrir, reproc)
+      const excluir = document.createElement('button')
+      excluir.className = 'btn btn-mini btn-perigo'
+      excluir.textContent = 'Excluir'
+      excluir.hidden = !podeExcluir(j)
+      excluir.addEventListener('click', async () => {
+        if (await excluirJob(j)) await refreshHistorico()
+      })
+      li.append(dot, info, abrir, reproc, excluir)
       ul.appendChild(li)
     }
   } catch {}

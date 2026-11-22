@@ -7,7 +7,16 @@ export interface ListaJob {
   total: number
   ok: number
   erro: number
+  // Linhas com envio feito e ainda não confirmado no site (excluir o job perde esse registro).
+  sem_confirmacao: number
 }
+
+export type ResultadoExclusao = 'excluido' | 'nao_encontrado' | 'rodando' | 'nao_permitido'
+
+// Excluível: job parado (pendente/pausado/cancelado) ou com alguma linha em erro.
+// Concluído todo ok fica como histórico; rodando nunca.
+const SQL_JOB_EXCLUIVEL = `j.status != 'rodando' AND (j.status IN ('pendente','pausado','cancelado')
+  OR EXISTS (SELECT 1 FROM job_linhas l WHERE l.job_id = j.id AND l.status = 'erro'))`
 
 export interface QueryExecutor {
   rows<T = unknown>(sql: string, params?: readonly unknown[]): Promise<T[]>
@@ -182,12 +191,33 @@ export abstract class Banco {
     )
   }
 
+  // Apaga o job, suas linhas e logs SOMENTE do banco do app (nada é apagado no site da Podium).
+  // A checagem e a exclusão acontecem na mesma transação; no Postgres, com o mesmo lock do
+  // claim de início, para um "Iniciar" simultâneo não pegar um job sendo excluído.
+  async excluirJob(jobId: number): Promise<ResultadoExclusao> {
+    return this.executar(e =>
+      e.transacao(async () => {
+        if (this.exigeBloqueioGlobal) await e.rows<unknown[]>(LOCK_JOB_GLOBAL_SQL)
+        const job = await e.rows<{ status: StatusJob }>('SELECT status FROM jobs WHERE id = ?', [jobId])
+        if (!job.length) return 'nao_encontrado'
+        if (job[0]!.status === 'rodando') return 'rodando'
+        const ok = await e.rows<{ id: number }>(`SELECT j.id FROM jobs j WHERE j.id = ? AND ${SQL_JOB_EXCLUIVEL}`, [jobId])
+        if (!ok.length) return 'nao_permitido'
+        await e.changes('DELETE FROM logs WHERE job_id = ?', [jobId])
+        await e.changes('DELETE FROM job_linhas WHERE job_id = ?', [jobId])
+        await e.changes('DELETE FROM jobs WHERE id = ?', [jobId])
+        return 'excluido'
+      })
+    )
+  }
+
   async listarJobs(): Promise<ListaJob[]> {
     return this.executar(async e => {
       const rows = await e.rows<Record<string, unknown>>(
         `SELECT j.id, j.status, j.criado_em, j.total,
                 COALESCE(SUM(CASE WHEN l.status='ok' THEN 1 ELSE 0 END),0) AS ok,
-                COALESCE(SUM(CASE WHEN l.status='erro' THEN 1 ELSE 0 END),0) AS erro
+                COALESCE(SUM(CASE WHEN l.status='erro' THEN 1 ELSE 0 END),0) AS erro,
+                COALESCE(SUM(CASE WHEN l.enviadas > l.confirmadas THEN 1 ELSE 0 END),0) AS sem_confirmacao
          FROM jobs j LEFT JOIN job_linhas l ON l.job_id = j.id
          GROUP BY j.id ORDER BY j.id DESC`
       )
@@ -198,6 +228,7 @@ export abstract class Banco {
         total: num(r.total),
         ok: num(r.ok),
         erro: num(r.erro),
+        sem_confirmacao: num(r.sem_confirmacao),
       }))
     })
   }

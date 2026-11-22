@@ -97,6 +97,55 @@ export function suíteComumBanco(novo: () => Promise<Banco>): void {
     expect(a!.status).toBe('erro')
   })
 
+  it('excluirJob apaga job pendente com linhas e logs, sem tocar em outros jobs', async () => {
+    const banco = await novo()
+    const id = await banco.criarJob([pessoaExemplo, pessoaExemplo])
+    const outro = await banco.criarJob([pessoaExemplo])
+    await banco.registrarLog('log do job', 'info', id)
+    await banco.registrarLog('log do outro', 'info', outro)
+    expect(await banco.excluirJob(id)).toBe('excluido')
+    expect((await banco.listarJobs()).map(j => j.id)).toEqual([outro])
+    expect(await banco.linhasDoJob(id)).toEqual([])
+    expect(await banco.logs(id)).toEqual([])
+    expect(await banco.linhasDoJob(outro)).toHaveLength(1)
+    expect((await banco.logs(outro)).join(' ')).toContain('log do outro')
+    expect(await banco.excluirJob(id)).toBe('nao_encontrado')
+  })
+
+  it('excluirJob recusa job rodando', async () => {
+    const banco = await novo()
+    const id = await banco.criarJob([pessoaExemplo])
+    expect(await banco.tentarIniciarJob(id)).toBe(true)
+    expect(await banco.excluirJob(id)).toBe('rodando')
+    expect(await banco.linhasDoJob(id)).toHaveLength(1)
+  })
+
+  it('excluirJob recusa concluído todo ok, mas aceita concluído com erro', async () => {
+    const banco = await novo()
+    const ok = await banco.criarJob([pessoaExemplo])
+    const l = (await banco.linhasDoJob(ok))[0]!
+    await banco.atualizarLinha({ ...l, status: 'ok', base_cpf: 0, enviadas: 1, confirmadas: 1 })
+    await banco.atualizarStatusJob(ok, 'concluido')
+    expect(await banco.excluirJob(ok)).toBe('nao_permitido')
+
+    const comErro = await banco.criarJob([pessoaExemplo])
+    const le = (await banco.linhasDoJob(comErro))[0]!
+    await banco.atualizarLinha({ ...le, status: 'erro', erro: 'x', base_cpf: 0, enviadas: 1, confirmadas: 0 })
+    await banco.atualizarStatusJob(comErro, 'concluido')
+    const lista = await banco.listarJobs()
+    expect(lista.find(j => j.id === comErro)?.sem_confirmacao).toBe(1)
+    expect(lista.find(j => j.id === ok)?.sem_confirmacao).toBe(0)
+    expect(await banco.excluirJob(comErro)).toBe('excluido')
+  })
+
+  it('job excluído some do aviso de linhas em aberto', async () => {
+    const banco = await novo()
+    const id = await banco.criarJob([pessoaExemplo])
+    expect(await banco.linhasEmAbertoDosCpfs([pessoaExemplo.cpf])).toHaveLength(1)
+    await banco.excluirJob(id)
+    expect(await banco.linhasEmAbertoDosCpfs([pessoaExemplo.cpf])).toHaveLength(0)
+  })
+
   it('reconciliarBoot devolve rodando e cadastrando a pendente', async () => {
     const banco = await novo()
     const id = await banco.criarJob([pessoaExemplo])

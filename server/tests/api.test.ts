@@ -203,6 +203,38 @@ describe('API', () => {
   })
 })
 
+describe('API — excluir job', () => {
+  it('exclui job pendente e responde 404 depois', async () => {
+    const id = await criarJob(base, TEXTO)
+    const r = await fetch(`${base}/api/jobs/${id}`, { method: 'DELETE' })
+    expect(r.status).toBe(200)
+    expect(await r.json()).toEqual({ ok: true })
+    expect((await fetch(`${base}/api/jobs/${id}`)).status).toBe(404)
+    expect((await fetch(`${base}/api/jobs/${id}`, { method: 'DELETE' })).status).toBe(404)
+  })
+
+  it('recusa excluir job rodando (409) e o job continua lá', async () => {
+    const id = await criarJob(base, TEXTO)
+    await banco.atualizarStatusJob(id, 'rodando')
+    const r = await fetch(`${base}/api/jobs/${id}`, { method: 'DELETE' })
+    expect(r.status).toBe(409)
+    expect((await fetch(`${base}/api/jobs/${id}`)).status).toBe(200)
+    await banco.atualizarStatusJob(id, 'pendente')
+  })
+
+  it('recusa excluir job concluído todo ok (409)', async () => {
+    const id = await criarJob(base, TEXTO)
+    const l = (await banco.linhasDoJob(id))[0]!
+    await banco.atualizarLinha({ ...l, status: 'ok', base_cpf: 0, enviadas: 1, confirmadas: 1 })
+    await banco.atualizarStatusJob(id, 'concluido')
+    expect((await fetch(`${base}/api/jobs/${id}`, { method: 'DELETE' })).status).toBe(409)
+  })
+
+  it('id inválido dá 400', async () => {
+    expect((await fetch(`${base}/api/jobs/abc`, { method: 'DELETE' })).status).toBe(400)
+  })
+})
+
 describe('API com PIN', () => {
   let srv2: ReturnType<typeof Object>
   let base2: string

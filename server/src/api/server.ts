@@ -361,6 +361,33 @@ export async function startServer(opts: StartOpts = {}): Promise<{
     res.json({ ok: true, liberadas })
   }))
 
+  app.delete('/api/jobs/:id', rota(async (req, res) => {
+    const id = Number(req.params.id)
+    if (!Number.isInteger(id) || id <= 0) {
+      res.status(400).json({ ok: false, erro: 'Job inválido' })
+      return
+    }
+    if (runners.has(id)) {
+      res.status(409).json({ ok: false, erro: 'Job está rodando. Pause e espere parar antes de excluir.' })
+      return
+    }
+    const r = await banco.excluirJob(id)
+    if (r === 'nao_encontrado') {
+      res.status(404).json({ ok: false, erro: 'Job não encontrado' })
+      return
+    }
+    if (r === 'rodando') {
+      res.status(409).json({ ok: false, erro: 'Job está rodando. Pause e espere parar antes de excluir.' })
+      return
+    }
+    if (r === 'nao_permitido') {
+      res.status(409).json({ ok: false, erro: 'Só dá para excluir jobs pendentes ou com erro (concluídos ficam no histórico).' })
+      return
+    }
+    await banco.registrarLog(`Job #${id} excluído do app (nada foi apagado no site)`, 'warn')
+    res.json({ ok: true })
+  }))
+
   // Express só reconhece handler de erro com 4 parâmetros, mesmo que `next` não seja usado.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
