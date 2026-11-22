@@ -1,5 +1,6 @@
-// Réplica da página real /main.php?conteudo=form_rifa (estrutura copiada do site em 2026-10-08,
-// dados fictícios). Devolvida em bytes ISO-8859-1, como o site serve.
+// Réplica da página real /main.php?conteudo=form_rifa, dados fictícios, em bytes ISO-8859-1.
+// layout 'lista' = site redesenhado (estrutura copiada em 2026-11-22, padrão);
+// layout 'tabela' = site antigo (copiado em 2026-10-08).
 
 export interface RifaFixture {
   numero: string
@@ -15,7 +16,27 @@ const FORM = `<form method="post" action="/registrar_rifa.php" id="rifa" enctype
   <input type="submit" name="enviar" value="Enviar" />
 </form>`
 
-export function htmlFormRifa(rifas: RifaFixture[], opts: { semForm?: boolean; semTabela?: boolean } = {}): string {
+function listaVendas(rifas: RifaFixture[]): string {
+  const cartoes = rifas
+    .map(
+      r => `<div class="row" style="grid-template-columns:minmax(0,1fr) auto;align-items:start">
+<div><b>${r.nome} </b><div class="muted small" style="overflow-wrap:anywhere">${r.cpf} · (11) 98765-4321 · x@exemplo.com.br · Ensino Médio</div></div>
+<div style="text-align:right"><b>Nº ${r.numero}</b><div class="muted small">20/09/2026 10:00</div></div>
+</div>`
+    )
+    .join('\n')
+  return `<section class="panel" aria-labelledby="h-vendas">
+<h2 class="sec" id="h-vendas">Suas vendas</h2>
+<div class="rows">
+${cartoes}
+</div>
+</section>`
+}
+
+export function htmlFormRifa(
+  rifas: RifaFixture[],
+  opts: { semForm?: boolean; semTabela?: boolean; layout?: 'lista' | 'tabela' } = {}
+): string {
   const linhas = rifas
     .map(
       r => `                    <tr align="center">
@@ -48,9 +69,9 @@ ${linhas}
             </tbody>
 </table>`
   return `<html><head><meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1" /></head><body>
-<small id="sair"><a href="logoff.php" title="Logout">SAIR</a></small>
+<a href="logoff.php">Sair</a>
 ${opts.semForm ? '' : FORM}
-${opts.semTabela ? '' : tabela}
+${opts.semTabela ? '' : opts.layout === 'tabela' ? tabela : listaVendas(rifas)}
 </body></html>`
 }
 

@@ -69,8 +69,8 @@ describe('codificarFormLatin1', () => {
   })
 })
 
-describe('parseRifas', () => {
-  it('lê Nº e CPF de cada linha, ignorando o span oculto da data', async () => {
+describe('parseRifas — site redesenhado (lista "Suas vendas")', () => {
+  it('lê Nº e CPF de cada cartão', async () => {
     const html = await pagina(htmlFormRifa([rifa(1003, '867.301.690-87', 'Ana Lúcia'), rifa(1310, '111.444.777-35')]))
     expect(parseRifas(html)).toEqual([
       { numero: '0001003', cpf: '86730169087' },
@@ -78,30 +78,55 @@ describe('parseRifas', () => {
     ])
   })
 
-  it('tabela sem linhas (conta nova) devolve lista vazia', async () => {
+  it('lista sem cartões (conta nova) devolve lista vazia', async () => {
     expect(parseRifas(await pagina(htmlFormRifa([])))).toEqual([])
   })
 
-  it('decodificar como UTF-8 (o bug antigo) é detectado: cabeçalho não reconhecido lança', () => {
+  it('decodificar como UTF-8 é detectado: lança em vez de devolver vazio', () => {
     const utf8Errado = new TextDecoder('utf-8').decode(emLatin1(htmlFormRifa([rifa(1003, '867.301.690-87')])))
-    expect(() => parseRifas(utf8Errado)).toThrow(/Cabeçalho da tabela de rifas mudou/)
+    expect(() => parseRifas(utf8Errado)).toThrow(/Nº/)
   })
 
   it('lança quando não é a página autenticada', () => {
     expect(() => parseRifas('<html>login</html>')).toThrow(/formulário autenticado/)
   })
 
-  it('lança quando a tabela some (nunca devolve vazio por engano)', async () => {
+  it('lança quando a lista some (nunca devolve vazio por engano)', async () => {
     expect(() => parseRifas(htmlFormRifa([], { semTabela: true }))).toThrow(/não encontrada/)
   })
 
-  it('lança quando uma linha tem formato inesperado', async () => {
+  it('lança quando o Nº tem formato inesperado', async () => {
     const html = (await pagina(htmlFormRifa([rifa(1003, '867.301.690-87')]))).replace('0001003', 'abc')
-    expect(() => parseRifas(html)).toThrow(/Nº inesperado/)
+    expect(() => parseRifas(html)).toThrow(/Nº/)
+  })
+
+  it('lança quando o CPF some do cartão', async () => {
+    const html = (await pagina(htmlFormRifa([rifa(1003, '867.301.690-87')]))).replace('867.301.690-87', '')
+    expect(() => parseRifas(html)).toThrow(/CPF inesperado/)
+  })
+})
+
+describe('parseRifas — layout antigo (tabela #imoveis)', () => {
+  const tab = (r: Parameters<typeof htmlFormRifa>[0]) => pagina(htmlFormRifa(r, { layout: 'tabela' }))
+
+  it('lê Nº e CPF de cada linha, ignorando o span oculto da data', async () => {
+    expect(parseRifas(await tab([rifa(1003, '867.301.690-87', 'Ana Lúcia'), rifa(1310, '111.444.777-35')]))).toEqual([
+      { numero: '0001003', cpf: '86730169087' },
+      { numero: '0001310', cpf: '11144477735' },
+    ])
+  })
+
+  it('tabela sem linhas devolve lista vazia', async () => {
+    expect(parseRifas(await tab([]))).toEqual([])
+  })
+
+  it('cabeçalho não reconhecido lança', () => {
+    const utf8Errado = new TextDecoder('utf-8').decode(emLatin1(htmlFormRifa([rifa(1003, '867.301.690-87')], { layout: 'tabela' })))
+    expect(() => parseRifas(utf8Errado)).toThrow(/Cabeçalho da tabela de rifas mudou/)
   })
 
   it('lança quando a linha perde colunas', async () => {
-    const html = (await pagina(htmlFormRifa([rifa(1003, '867.301.690-87')]))).replace(/<td data-title="Ano">2026<\/td>/, '')
+    const html = (await tab([rifa(1003, '867.301.690-87')])).replace(/<td data-title="Ano">2026<\/td>/, '')
     expect(() => parseRifas(html)).toThrow(/colunas/)
   })
 })

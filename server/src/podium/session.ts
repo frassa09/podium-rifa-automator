@@ -2,6 +2,7 @@ import { Agent } from 'undici'
 import { maskCPF, apenasDigitos } from '../utils/cpf.ts'
 import { maskPhone } from '../utils/masks.ts'
 import type { Pessoa } from '../types.ts'
+import { parseRifas, type RifaSite } from './parseRifas.ts'
 
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36'
@@ -34,53 +35,7 @@ export function codificarFormLatin1(campos: Record<string, string>): string {
   return Object.entries(campos).map(([k, v]) => `${cod(k)}=${cod(v)}`).join('&')
 }
 
-export interface RifaSite {
-  numero: string
-  cpf: string
-}
-
-const textoCelula = (html: string): string =>
-  html
-    .replace(/<span[^>]*display:\s*none[^>]*>[\s\S]*?<\/span>/gi, '')
-    .replace(/<[^>]*>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-
-const normalizarRotulo = (s: string): string =>
-  s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[º°]/g, 'o').toLowerCase().trim()
-
-// Lê a tabela de rifas da conta. Qualquer desvio do formato conhecido LANÇA erro:
-// nunca devolve lista vazia "por não achar", pois isso faria o motor achar que nada foi criado.
-export function parseRifas(html: string): RifaSite[] {
-  if (!/<form[^>]*action=["']?[^"'>]*registrar_rifa\.php/i.test(html)) {
-    throw new Error('Página não é o formulário autenticado de rifas (sessão expirada?)')
-  }
-  const tabela = /<table[^>]*id=["']imoveis["'][^>]*>([\s\S]*?)<\/table>/i.exec(html)?.[1]
-  if (!tabela) throw new Error('Tabela de rifas (#imoveis) não encontrada na página')
-  const thead = /<thead[^>]*>([\s\S]*?)<\/thead>/i.exec(tabela)?.[1]
-  const tbody = /<tbody[^>]*>([\s\S]*?)<\/tbody>/i.exec(tabela)?.[1]
-  if (thead === undefined || tbody === undefined) throw new Error('Tabela de rifas sem thead/tbody')
-
-  const cab = [...thead.matchAll(/<th[^>]*>([\s\S]*?)<\/th>/gi)].map(m => normalizarRotulo(textoCelula(m[1]!)))
-  const iNum = cab.indexOf('no')
-  const iCpf = cab.indexOf('cpf')
-  if (iNum < 0 || iCpf < 0) throw new Error(`Cabeçalho da tabela de rifas mudou: ${JSON.stringify(cab)}`)
-
-  const rifas: RifaSite[] = []
-  for (const tr of tbody.match(/<tr[^>]*>[\s\S]*?<\/tr>/gi) ?? []) {
-    const tds = [...tr.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)].map(m => textoCelula(m[1]!))
-    // Linha "nenhum registro" do DataTables (célula única com colspan).
-    if (tds.length === 1 && /colspan/i.test(tr)) continue
-    if (tds.length !== cab.length) throw new Error(`Linha da tabela com ${tds.length} colunas (esperado ${cab.length})`)
-    const numero = tds[iNum]!
-    const cpf = apenasDigitos(tds[iCpf]!)
-    if (!/^\d+$/.test(numero)) throw new Error(`Nº inesperado na tabela: "${numero}"`)
-    if (cpf.length !== 11) throw new Error(`CPF inesperado na tabela (Nº ${numero})`)
-    rifas.push({ numero, cpf })
-  }
-  return rifas
-}
+export { parseRifas, type RifaSite } from './parseRifas.ts'
 
 export class ErroLogin extends Error {
   motivo: 'cpf' | 'credencial' | 'rede'
@@ -210,6 +165,6 @@ export class PodiumSession {
   async checarSessao(): Promise<boolean> {
     const res = await this.req('/main.php?conteudo=principal')
     const html = await lerTexto(res)
-    return html.includes('Logout') || html.includes('form_rifa')
+    return html.includes('logoff.php') || html.includes('Logout') || html.includes('form_rifa')
   }
 }
